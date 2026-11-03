@@ -1,7 +1,8 @@
 // TradingView's Create alert dialog: one to five conditions (a source, an operator and what it's
 // compared with), the trigger, an expiry, the message and where the alert goes. Alerts run on the
 // server (lib/alerts.js), so the sources are the ones it can compute: price and the chart's own
-// indicators (not Pine scripts, which live in the browser).
+// indicators (not Pine scripts, which live in the browser). An alert is on one symbol or on a watchlist, which
+// checks every symbol on the list on its own (TradingView's watchlist alerts).
 import { api, esc, ticker } from "./api.js";
 import { BY_ID } from "../lib/indicators.js";
 import { playSound, SOUNDS } from "./chartsettings.js";
@@ -67,6 +68,7 @@ const badge = (sym) => {
   for (const c of t) h = (h * 31 + c.charCodeAt(0)) % 360;
   return `<span class="wl-badge" style="--h:${h}">${esc((t.match(/[A-Z0-9]/i) || ["?"])[0].toUpperCase())}</span>`;
 };
+const LIST_ICON = '<svg viewBox="0 0 18 18" class="ad-ico ad-listico"><path d="M6.5 4.5h9M6.5 9h9M6.5 13.5h9M2.5 4.5h1M2.5 9h1M2.5 13.5h1"/></svg>';
 
 // The chart's indicators an alert can use. Pine scripts, indicators on another indicator and ones on
 // another interval are left out: the server can't compute those. XRPL On chain is in: the server reads the
@@ -170,7 +172,8 @@ export function openAlertDialog(app, preset = {}) {
       );
       return {
         editId: edit.id,
-        symbol: edit.symbol,
+        symbol: edit.symbol || p.cfg.symbol,
+        watchlist: edit.watchlist || null,
         tf: edit.tf,
         conds,
         match: edit.match || "all",
@@ -188,6 +191,7 @@ export function openAlertDialog(app, preset = {}) {
     return {
       editId: null,
       symbol: preset.symbol || p.cfg.symbol,
+      watchlist: preset.watchlist || null,
       tf: p.cfg.tf,
       conds: (preset.rules || [{}]).map(freshCond),
       match: "all",
@@ -224,8 +228,13 @@ export function openAlertDialog(app, preset = {}) {
     if (isMoving(c.op)) return `${left}${opLabel(c.op).replace(" %", "")} ${fmtV(c.right.v)}${isPct(c.op) ? "%" : ""} in ${c.bars} bar${Number(c.bars) === 1 ? "" : "s"}`;
     return `${left}${opLabel(c.op)} ${nameOf(c.right)}`;
   };
-  // TradingView's default message: "XRPUSD Crossing 1.31334"
-  const autoText = () => `${ticker(st.symbol)} ${st.conds.map(condText).join(st.match === "any" ? " or " : ", ")}`;
+  const listSyms = (n = st.watchlist) => [...new Set(app.state.watchlists?.[n] || [])];
+  const symHtml = () =>
+    st.watchlist
+      ? `${LIST_ICON}<b>${esc(st.watchlist)}</b><small>${listSyms().length} symbols</small>${CHEVRON}`
+      : `${badge(st.symbol)}<b>${esc(ticker(st.symbol))}</b>${CHEVRON}`;
+  // TradingView's default message: "XRPUSD Crossing 1.31334"; on a list the server puts each symbol in front
+  const autoText = () => `${st.watchlist ? "" : `${ticker(st.symbol)} `}${st.conds.map(condText).join(st.match === "any" ? " or " : ", ")}`;
   if (st.autoMsg === null) st.autoMsg = !st.message || st.message === autoText();
   const message = () => (st.autoMsg ? autoText() : st.message);
   const notifyText = () =>
@@ -242,7 +251,7 @@ export function openAlertDialog(app, preset = {}) {
   app.onModalClose = () => $("#modal").classList.remove("ad-clear");
   const head = card.querySelector(".modal-head"),
     body = card.querySelector(".modal-body");
-  head.innerHTML = `<div class="ad-title"><span>${edit ? "Edit alert on" : "Create alert on"}</span><button class="ad-sym" data-x="sym" title="Change the symbol">${badge(st.symbol)}<b>${esc(ticker(st.symbol))}</b>${CHEVRON}</button></div>
+  head.innerHTML = `<div class="ad-title"><span>${edit ? "Edit alert on" : "Create alert on"}</span><button class="ad-sym" data-x="sym" title="Change the symbol, or alert on a watchlist">${symHtml()}</button></div>
     <button class="ad-hbtn" data-x="manager" title="Open the alerts list"><svg viewBox="0 0 18 18"><rect x="2.5" y="2.5" width="5" height="5" rx="1"/><rect x="10.5" y="2.5" width="5" height="5" rx="1"/><rect x="2.5" y="10.5" width="5" height="5" rx="1"/><path d="M13 10.5v5M10.5 13h5"/></svg></button>
     <button class="ad-hbtn" data-close title="Close"><svg viewBox="0 0 18 18"><path d="M4 4l10 10M14 4L4 14"/></svg></button>`;
   head.querySelector("[data-close]").onclick = () => app.closeModal();
@@ -272,7 +281,7 @@ export function openAlertDialog(app, preset = {}) {
 
   function render() {
     tb.closePopover();
-    head.querySelector(".ad-sym").innerHTML = `${badge(st.symbol)}<b>${esc(ticker(st.symbol))}</b>${CHEVRON}`;
+    head.querySelector(".ad-sym").innerHTML = symHtml();
     if (st.page === "message") {
       body.innerHTML = `<div class="ad-sub"><button class="ad-back" data-x="back" title="Back"><svg viewBox="0 0 18 18"><path d="M11 4.5L6.5 9l4.5 4.5"/></svg></button><span>Message</span></div>
         <label class="ad-field"><span>Alert name</span><input class="cs-num ad-in" data-f="name" maxlength="80" placeholder="Shown in the alerts list and the pop-up" value="${esc(st.name)}"></label>
@@ -296,7 +305,11 @@ export function openAlertDialog(app, preset = {}) {
       return;
     }
     const expired = edit && edit.expires && edit.expires <= Date.now() && !st.expires;
-    body.innerHTML = `<div class="ad-grid">${st.conds.map(condHtml).join("")}
+    const n = st.watchlist ? listSyms().length : 0;
+    const note = st.watchlist
+      ? `<p class="ad-hint ad-listnote">${n ? `Checks each of the ${n} symbol${n === 1 ? "" : "s"} on ${esc(st.watchlist)} on its own, with these conditions. A value is the same number for every symbol.` : `${esc(st.watchlist)} is empty, so this alert has nothing to check until you add symbols to it.`}</p>`
+      : "";
+    body.innerHTML = `${note}<div class="ad-grid">${st.conds.map(condHtml).join("")}
       <div class="ad-l"></div><div class="ad-c"><div class="ad-add">${st.conds.length < 5 ? '<button class="ad-plus" data-x="add">+ Add condition</button>' : ""}<span class="cs-help q" title="Up to 5 conditions. The alert fires when all of them hold, or any one of them (pick And or Or).">?</span></div></div>
       <div class="ad-sep"></div>
       ${row("Trigger", TRIGGERS.find(([k]) => k === st.trigger)?.[1] || st.trigger, "trigger")}
@@ -446,9 +459,12 @@ export function openAlertDialog(app, preset = {}) {
       if (isMoving(c.op) && !(Number(c.right.v) > 0)) return app.toast("Moving Up and Moving Down need an amount above 0.", "err");
     }
     if (st.hookOn && st.webhook.trim() && !/^https?:\/\/\S+$/i.test(st.webhook.trim())) return app.toast("The webhook must be an http(s) URL.", "err");
+    // a drawn line belongs to one symbol's chart
+    if (st.watchlist && st.conds.some((c) => [c.left, c.right, isChannel(c.op) ? c.right2 : null].some((o) => o?.kind === "line")))
+      return app.toast("A drawn line belongs to one chart, so an alert on a list can't use it.", "err");
     const { conditions, indicators } = compile(st.conds);
     const body = {
-      symbol: st.symbol,
+      ...(st.watchlist ? { watchlist: st.watchlist, symbol: "" } : { symbol: st.symbol, ...(st.editId ? { watchlist: null } : {}) }),
       tf: st.tf,
       left: conditions[0].left,
       op: conditions[0].op,
@@ -464,13 +480,13 @@ export function openAlertDialog(app, preset = {}) {
       webhook: st.hookOn ? st.webhook.trim() : "",
     };
     try {
-      if (st.editId) await api.patch(`/api/alerts/${st.editId}`, { ...body, active: true, expired: false, lastBar: null, error: null });
+      if (st.editId) await api.patch(`/api/alerts/${st.editId}`, { ...body, active: true, expired: false, lastBar: null, lastBars: {}, error: null });
       else await api.post("/api/alerts", body);
     } catch (e) {
       return app.toast(esc(e.message), "err");
     }
     app.closeModal();
-    app.toast(st.editId ? "Alert saved." : `Alert created on ${esc(ticker(st.symbol))}.`);
+    app.toast(st.editId ? "Alert saved." : `Alert created on ${st.watchlist ? `the list ${esc(st.watchlist)}` : esc(ticker(st.symbol))}.`);
     if (st.notify.desktop && "Notification" in window && Notification.permission === "default") Notification.requestPermission();
     app.panels?.alertsChanged?.();
   }
@@ -507,7 +523,8 @@ export function openAlertDialog(app, preset = {}) {
         st.match = v;
         render();
       });
-    if (x === "trigger") return list(b, TRIGGERS.map(([k, l, sub]) => [k, `<span>${esc(l)}</span>`, sub]), st.trigger, (v) => {
+    const subOf = (k, sub) => (st.watchlist && k === "once" ? "Fires once for each symbol on the list, then stops when every one has." : sub);
+    if (x === "trigger") return list(b, TRIGGERS.map(([k, l, sub]) => [k, `<span>${esc(l)}</span>`, subOf(k, sub)]), st.trigger, (v) => {
       st.trigger = v;
       render();
     }, "ad-triglist");
@@ -526,9 +543,25 @@ export function openAlertDialog(app, preset = {}) {
       return app.panels?.showSide?.("alerts");
     }
     if (x === "sym") {
-      // the symbol search uses this same modal, so the form comes back from `st` afterwards
-      const keep = { ...st, page: "main" };
-      return app.openSymbolSearch("", (sym) => openAlertDialog(app, { state: { ...keep, symbol: sym }, edit }), "Alert symbol");
+      const syms = [...new Set([p.cfg.symbol, st.symbol])];
+      const items = [
+        ...syms.map((s) => [`s:${s}`, `${badge(s)}<span>${esc(ticker(s))}</span>`]),
+        ...Object.keys(app.state.watchlists || {}).map((n) => [`w:${n}`, `${LIST_ICON}<span>Watchlist: ${esc(n)}</span>`, `${listSyms(n).length} symbols, each checked on its own`]),
+        ["search", "<span>Other symbol…</span>"],
+      ];
+      return list(b, items, st.watchlist ? `w:${st.watchlist}` : `s:${st.symbol}`, (v) => {
+        if (v === "search") {
+          // the symbol search uses this same modal, so the form comes back from `st` afterwards
+          const keep = { ...st, page: "main" };
+          return app.openSymbolSearch("", (sym) => openAlertDialog(app, { state: { ...keep, symbol: sym, watchlist: null }, edit }), "Alert symbol");
+        }
+        if (v.startsWith("w:")) st.watchlist = v.slice(2);
+        else {
+          st.symbol = v.slice(2);
+          st.watchlist = null;
+        }
+        render();
+      }, "ad-symlist");
     }
     if (x === "test") {
       try {

@@ -2,8 +2,10 @@
 // (data/feeds.json, see lib/feeds.js) go in front of them.
 //
 //   Crypto  BINANCE:BTCUSDT   Binance -> Binance market-data mirror -> Binance.US -> Coinbase -> Kraken
+//   Perps   BINANCE:BTCUSDT.P Binance USD-M futures -> Bybit linear perpetuals
 //   Stocks  US:AAPL           Your Alpaca / Polygon key -> Yahoo (when it isn't rate limiting you) -> Nasdaq
-//   Forex   FX:EURUSD         Yahoo -> Kraken
+//   Forex   FX:EURUSD         Your OANDA key -> Yahoo -> Kraken
+//   OANDA   OANDA:XAU_USD     Your OANDA key only (any instrument your account lists)
 //   Futures CME:NQ1!          Your Polygon key (data/feeds.json) -> Yahoo, about 10 minutes delayed
 //   Global  YAHOO:^FTSE       Yahoo only (indices, futures, non-US stocks)
 //
@@ -257,6 +259,12 @@ export async function resolve(raw) {
   const fut = /^(CME(?:_MINI)?:)?([A-Z]{2,3})(1!)?$/.exec(input);
   if (fut && FUTURES[fut[2]] && (fut[1] || fut[3] || !(await usTickerSet()).has(fut[2])))
     return { id: `CME:${fut[2]}1!`, exchange: "CME", ticker: `${fut[2]}1!` };
+  // BTCUSDT.P, BTC.P, BTCPERP, BINANCE:ETHUSDT.P: crypto perpetual futures, TradingView's ".P".
+  const perp = /^(?:BINANCE:)?([A-Z0-9]{2,15}?)(USDT|USDC)?[-/]?(?:\.P|PERP)$/.exec(input);
+  if (perp) {
+    const t = `${perp[1]}${perp[2] || "USDT"}.P`;
+    return { id: `BINANCE:${t}`, exchange: "BINANCE", ticker: t };
+  }
   // Tickers go into upstream URLs, so only the characters real tickers use are allowed.
   if (
     !/^([A-Z0-9_]{1,20}:)?[A-Z0-9][A-Z0-9.\-_^=/]{0,29}$/.test(
@@ -389,8 +397,8 @@ const BINANCE_NATIVE = [
 const binanceInterval = (tf) =>
   ({ "1D": "1d", "3D": "3d", "1W": "1w" })[tf] || tf;
 
-async function binanceCandles(ticker, tf, limit) {
-  const base = nativeBase(tf, BINANCE_NATIVE);
+async function binanceCandles(ticker, tf, limit, futures = false) {
+  const base = nativeBase(tf, futures ? BINANCE_NATIVE.slice(1) : BINANCE_NATIVE);
   if (!base) throw new Error(`Binance can't build a ${tf} chart`);
   const ratio = Math.max(
     1,
@@ -401,8 +409,8 @@ async function binanceCandles(ticker, tf, limit) {
     endTime = null;
   while (out.length < want) {
     const n = Math.min(1000, want - out.length);
-    const q = `/api/v3/klines?symbol=${encodeURIComponent(ticker)}&interval=${binanceInterval(base)}&limit=${n}${endTime ? `&endTime=${endTime}` : ""}`;
-    const rows = await binanceGet(q);
+    const q = `/klines?symbol=${encodeURIComponent(ticker)}&interval=${binanceInterval(base)}&limit=${n}${endTime ? `&endTime=${endTime}` : ""}`;
+    const rows = await (futures ? binanceFuturesGet(`/fapi/v1${q}`) : binanceGet(`/api/v3${q}`));
     if (!rows.length) break;
     out = rows
       .map((k) => ({
@@ -417,6 +425,56 @@ async function binanceCandles(ticker, tf, limit) {
     endTime = rows[0][0] - 1;
     if (rows.length < n) break;
   }
+  return base === tf ? out.slice(-limit) : resample(out, tf).slice(-limit);
+}
+
+// ---------- Crypto perpetual futures ----------
+// Binance USD-M futures, then Bybit's linear perpetuals (Binance futures is blocked in some countries).
+async function binanceFuturesGet(p) {
+  try {
+    const out = await getJson(`https://fapi.binance.com${p}`);
+    mark("binance-futures", true);
+    return out;
+  } catch (e) {
+    mark("binance-futures", false, e);
+    throw e;
+  }
+}
+export async function perpSymbols() {
+  if (OFFLINE) return new Set(["BTCUSDT", "ETHUSDT"]);
+  return cached("binance:perps", 6 * 3600e3, async () => {
+    const info = await binanceFuturesGet("/fapi/v1/exchangeInfo");
+    return new Set(
+      info.symbols
+        .filter((s) => s.contractType === "PERPETUAL" && s.status === "TRADING")
+        .map((s) => s.symbol),
+    );
+  }).catch(() => new Set());
+}
+const BYBIT_NATIVE = { "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720", "1D": "D", "1W": "W" };
+async function bybitCandles(ticker, tf, limit) {
+  const base = nativeBase(tf, Object.keys(BYBIT_NATIVE));
+  if (!base) throw new Error(`Bybit can't build a ${tf} chart`);
+  const ratio = Math.max(1, Math.round(parseTf(tf).seconds / parseTf(base).seconds));
+  const want = Math.min(limit * ratio + ratio, 20000);
+  let out = [],
+    end = null;
+  while (out.length < want) {
+    const n = Math.min(1000, want - out.length);
+    const j = await getJson(
+      `https://api.bybit.com/v5/market/kline?category=linear&symbol=${encodeURIComponent(ticker)}&interval=${BYBIT_NATIVE[base]}&limit=${n}${end ? `&end=${end}` : ""}`,
+    );
+    if (j.retCode) throw new Error(`Bybit: ${j.retMsg}`);
+    const rows = j.result?.list || [];
+    if (!rows.length) break;
+    out = rows
+      .map((k) => ({ time: +k[0] / 1000, open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }))
+      .reverse()
+      .concat(out);
+    end = +rows.at(-1)[0] - 1;
+    if (rows.length < n) break;
+  }
+  out = dedupe(out);
   return base === tf ? out.slice(-limit) : resample(out, tf).slice(-limit);
 }
 
@@ -1118,7 +1176,13 @@ export async function getCandles(rawSymbol, tf = "1D", limit = 1500) {
       if (cut != null) held = { st, cut, label, where };
       return cut == null ? limit : Math.min(limit, Math.ceil((Date.now() / 1000 - cut) / parseTf(tf).seconds) + 10);
     };
-    if (sym.exchange === "BINANCE" && stored) {
+    if (sym.exchange === "BINANCE" && t.endsWith(".P")) {
+      const pair = t.slice(0, -2);
+      chain = [
+        ["Binance futures", () => binanceCandles(pair, tf, limit, true)],
+        ["Bybit", () => bybitCandles(pair, tf, limit)],
+      ];
+    } else if (sym.exchange === "BINANCE" && stored) {
       // Binance's own bars (Settings, Crypto data); no other exchange's bars after them
       const want = fromStore("BINANCE", "Binance's own bars", "Settings, Crypto data");
       chain = [["Binance", () => binanceCandles(t, tf, want)]];
@@ -1142,17 +1206,21 @@ export async function getCandles(rawSymbol, tf = "1D", limit = 1500) {
       chain = [["Kraken", () => (stored ? krakenWithHistory(t, tf, limit, kraken) : krakenCandles(t, tf, limit))]];
     } else if (sym.exchange === "FX" && METALS[t]) {
       const m = METALS[t];
-      chain = [["Yahoo", () => yahooCandles(m.yahoo, tf, limit)]];
+      chain = feeds.fxChain(t, tf, limit).concat([["Yahoo", () => yahooCandles(m.yahoo, tf, limit)]]);
       if (m.token)
         chain.push(
           ["Binance", () => binanceCandles(`${m.token}USDT`, tf, limit)],
           ["Coinbase", () => coinbaseCandles(`${m.token}-USD`, tf, limit)],
         );
     } else if (sym.exchange === "FX") {
-      chain = [
+      chain = feeds.fxChain(t, tf, limit).concat([
         ["Yahoo", () => yahooCandles(`${t}=X`, tf, limit)],
         ["Kraken", () => krakenCandles(t, tf, limit)],
-      ];
+      ]);
+    } else if (sym.exchange === "OANDA") {
+      if (!feeds.hasOanda())
+        throw badInput("OANDA symbols need your own OANDA token in data/feeds.json. See the README's own data feed section.");
+      chain = [["OANDA", () => feeds.oandaCandles(t, tf, limit)]];
     } else if (sym.exchange === "CME" && FUTURES[t.replace(/1!$/, "")]) {
       const root = t.replace(/1!$/, "");
       chain = feeds.futuresChain(root, tf, limit).concat([
@@ -1225,7 +1293,11 @@ export async function getCandles(rawSymbol, tf = "1D", limit = 1500) {
           ? "Stored bars are the whole market's; the newest come live from your Alpaca key on the free IEX feed, where volume counts IEX trades only."
           : "Live from your Alpaca key on the free IEX feed: prices are live, volume counts IEX trades only.",
       );
-    if (METALS[t] && res.provider !== "Yahoo")
+    if (res.provider === "OANDA")
+      notes.push(
+        "OANDA's own prices from your token, not exchange data: volume counts price changes, not contracts or shares.",
+      );
+    if (METALS[t] && res.provider !== "Yahoo" && res.provider !== "OANDA")
       notes.push(
         `This chart follows ${METALS[t].token}, a token backed by real gold, until Yahoo's gold feed is back.`,
       );
@@ -1348,7 +1420,7 @@ export async function getQuotes(symbols) {
     symbols.map((s) => resolve(s).catch(() => null)),
   );
   const binance = resolved
-    .filter((r) => r?.exchange === "BINANCE")
+    .filter((r) => r?.exchange === "BINANCE" && !r.ticker.endsWith(".P"))
     .map((r) => r.ticker);
   if (binance.length && !OFFLINE) {
     try {
@@ -1403,7 +1475,10 @@ export async function getQuotes(symbols) {
 export async function getSpread(rawSymbol) {
   const sym = await resolve(rawSymbol);
   let bid, ask, source;
-  if (sym.exchange === "BINANCE") {
+  if (sym.exchange === "BINANCE" && sym.ticker.endsWith(".P")) {
+    const r = await binanceFuturesGet(`/fapi/v1/ticker/bookTicker?symbol=${encodeURIComponent(sym.ticker.slice(0, -2))}`);
+    [bid, ask, source] = [+r.bidPrice, +r.askPrice, "Binance futures"];
+  } else if (sym.exchange === "BINANCE") {
     const r = await binanceGet(`/api/v3/ticker/bookTicker?symbol=${encodeURIComponent(sym.ticker)}`);
     [bid, ask, source] = [+r.bidPrice, +r.askPrice, "Binance"];
   } else if (sym.exchange === "COINBASE") {
@@ -1433,6 +1508,13 @@ export async function search(q) {
         type: "your data",
         exchange: "CSV",
       });
+  if (query.startsWith("OANDA:") && query.length > 6)
+    results.push({
+      symbol: query,
+      name: "From your OANDA token",
+      type: "your feed",
+      exchange: "OANDA",
+    });
   const root = query.replace(/^CME(_MINI)?:/, "").replace(/1!?$/, "");
   for (const [t, f] of Object.entries(FUTURES))
     if (
@@ -1457,7 +1539,9 @@ export async function search(q) {
         exchange: "FX",
       });
   const bin = await binanceSymbolMap();
-  const coin = commonCoin(query);
+  // what was typed without a perpetual's .P or PERP, then Kraken's XBT and XDG as everyone else names them
+  const typed = query.replace(/^BINANCE:/, "").replace(/[-/]?(\.P|PERP)$/, "");
+  const coin = commonCoin(typed);
   const cryptoHits = [...bin.entries()]
     .filter(([t, s]) => t.startsWith(coin) || s.base === coin)
     .sort(
@@ -1497,7 +1581,24 @@ export async function search(q) {
         });
     }
   }
-  results.push(...cryptoHits.slice(0, 1), ...feeds, ...cryptoHits.slice(1));
+  // The perpetual future for the same coin, as TradingView lists BTCUSDT.P under BTCUSDT.
+  const perps = bases.length ? await perpSymbols() : new Set();
+  for (const b of bases)
+    if (perps.has(`${b}USDT`))
+      feeds.push({
+        symbol: `BINANCE:${b}USDT.P`,
+        name: `${b} / USDT perpetual`,
+        type: "futures",
+        exchange: "Binance",
+      });
+  const perpFirst = typed !== query.replace(/^BINANCE:/, "");
+  const isPerp = (f) => f.symbol.endsWith(".P");
+  results.push(
+    ...(perpFirst ? feeds.filter(isPerp) : []),
+    ...cryptoHits.slice(0, 1),
+    ...feeds.filter((f) => !perpFirst || !isPerp(f)),
+    ...cryptoHits.slice(1),
+  );
   for (const a of FIAT)
     for (const b of FIAT) {
       if (a !== b && `${a}${b}`.startsWith(query.replace("/", "")))

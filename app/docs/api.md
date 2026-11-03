@@ -98,4 +98,5 @@ Alerts run inside the app every 15 seconds, as long as it's running.
 
 - `op`: `>`, `<`, `>=`, `<=`, `crossesAbove`, `crossesBelow`, `crosses`. Up to 5 conditions; `match` is `all` or `any`.
 - `trigger`: `once` (then it switches off), `oncePerBar` or `oncePerBarClose`.
+- `watchlist`: send the name of one of your watchlists instead of `symbol` and the alert checks every symbol on it. `once` then means once per symbol, and the alert stops when every symbol on the list has fired. Each event's `symbol` says which one fired. To turn a list's alert into one symbol's, `PATCH` it with `watchlist: null` and the `symbol`.
 - `webhook`: when it fires, the app POSTs JSON to this URL. Discord, Slack and Telegram URLs get their own message format; any other URL gets `{ text, alert, event }`, where `event` is `{ alertId, symbol, tf, text, price, barTime, at }`. That's the hook for your own code: point it at a small server of yours and act on the alert there.

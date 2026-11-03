@@ -158,6 +158,43 @@ test("XAUUSD charts gold, and falls back to PAXG when Yahoo is down", async () =
   if (!(r instanceof Error)) assert.ok(r.notes.some((n) => n.includes("PAXG")));
 });
 
+test("crypto perpetual futures: BTCUSDT.P charts Binance futures, then Bybit where Binance futures is blocked", async () => {
+  // A YouTube comment: "only spot trading is available in the list, and futures are not there".
+  for (const [typed, id] of [
+    ["BTCUSDT.P", "BINANCE:BTCUSDT.P"],
+    ["btc.p", "BINANCE:BTCUSDT.P"],
+    ["ETHPERP", "BINANCE:ETHUSDT.P"],
+    ["BINANCE:SOLUSDT.P", "BINANCE:SOLUSDT.P"],
+  ])
+    assert.equal((await P.resolve(typed)).id, id, typed);
+  const kline = (b) => [b.time * 1000, String(b.open), String(b.high), String(b.low), String(b.close), String(b.volume)];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const u = new URL(url);
+    if (u.host === "fapi.binance.com" && mode["fapi.binance.com"] !== 451) {
+      assert.equal(u.searchParams.get("symbol"), "BTCUSDT");
+      return Response.json(btc.slice(-Number(u.searchParams.get("limit"))).map(kline));
+    }
+    if (u.host === "api.bybit.com") {
+      assert.equal(u.searchParams.get("category"), "linear");
+      return Response.json({ retCode: 0, result: { list: btc.slice(-60).reverse().map(kline) } });
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    mode = {};
+    const a = await P.getCandles("BTCUSDT.P", "1D", 50);
+    assert.equal(a.provider, "Binance futures");
+    assert.equal(a.candles.length, 50);
+    mode = { "fapi.binance.com": 451 };
+    const b = await P.getCandles("BINANCE:BTCUSDT.P", "1W", 5);
+    assert.equal(b.provider, "Bybit");
+    assert.match(b.notes.join(" "), /Binance futures isn't answering right now, so this chart uses Bybit\./);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // Kraken's OHLC feed fills a minute without trades with a flat, zero volume bar; its archives (the
 // history store) have none. Mixed, a chart had two conventions: gaps in the past, flat bars lately.
 test("Kraken's filler bars (no trades) are left out, as in the history store", async () => {

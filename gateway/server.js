@@ -56,14 +56,14 @@ const PAGE_HEADERS = {
 };
 // The terminal's own pages. Scripts load only from this site and inline script never runs, so text
 // a chart script supplies can't run as code even where a screen forgets to escape it. Inline styles
-// stay allowed: the terminal sets style= throughout. Binance's two streams feed live crypto bars.
+// stay allowed: the terminal sets style= throughout. Binance's spot and futures streams feed live crypto bars.
 export const APP_CSP = [
   "default-src 'self'",
   "script-src 'self' 'report-sample'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob:",
-  "connect-src 'self' wss://stream.binance.com:9443 wss://data-stream.binance.vision",
+  "connect-src 'self' wss://stream.binance.com:9443 wss://data-stream.binance.vision wss://fstream.binance.com",
   "worker-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'none'",

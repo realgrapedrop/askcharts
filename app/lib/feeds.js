@@ -6,7 +6,8 @@
 //
 //   {
 //     "alpaca":  { "keyId": "PK...", "secretKey": "...", "feed": "iex" },
-//     "polygon": { "apiKey": "..." }
+//     "polygon": { "apiKey": "..." },
+//     "oanda":   { "token": "...", "account": "practice" }
 //   }
 //
 //   Alpaca   US stocks. A free Alpaca account gives live prices on the IEX feed ("feed": "sip" if
@@ -14,6 +15,9 @@
 //   Polygon  US stocks, and CME futures (NQ, MNQ, ES, MES) on a Polygon futures plan. Polygon is
 //            now called Massive; same keys. Live or delayed depends on your Polygon plan: the free
 //            plan is end-of-day only.
+//   OANDA    Forex and metals, plus anything your account lists as OANDA:XAU_USD or OANDA:NAS100_USD.
+//            These are OANDA's own prices, not exchange data. "account" is "practice" for a free
+//            demo account's token or "live" for a real account's; each only works on its own server.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -30,6 +34,10 @@ const TIMEOUT_MS = Number(process.env.QT_TIMEOUT_MS) || 10000;
 // (the tests point these at a stand-in)
 const ALPACA = process.env.QT_ALPACA_BASE || "https://data.alpaca.markets";
 const POLYGON = process.env.QT_POLYGON_BASE || "https://api.massive.com";
+const OANDA = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+};
 
 // Re-read when the file changes, so a key you add works without a restart.
 let memo = { mtime: -1, value: {} };
@@ -62,9 +70,15 @@ const polygonCfg = () => {
   const p = c.polygon || c.massive;
   return p?.apiKey ? p : null;
 };
+const oandaCfg = () => {
+  const o = feedConfig().oanda;
+  return o?.token ? o : null;
+};
+const oandaHost = () => (oandaCfg()?.account === "live" ? OANDA.live : OANDA.practice);
+export const hasOanda = () => Boolean(oandaCfg());
 // Names only: the keys themselves never leave this module.
 export const configured = () =>
-  [alpacaCfg() && "alpaca", polygonCfg() && "polygon"].filter(Boolean);
+  [alpacaCfg() && "alpaca", polygonCfg() && "polygon", oandaCfg() && "oanda"].filter(Boolean);
 
 // ---------- Settings, Stock data: your own keys, saved, checked and removed from the page ----------
 // The page only ever learns whether a key is saved and its last 4 characters; a key goes from the page
@@ -162,7 +176,7 @@ export function removeKey(provider) {
 export const alpacaName = () =>
   `Alpaca (${String(alpacaCfg()?.feed || "iex").toUpperCase()})`;
 // Every name a key provider can show on a chart, so fallback notes can say "your key".
-export const isKeyProvider = (name) => /^(Alpaca|Polygon)\b/.test(String(name));
+export const isKeyProvider = (name) => /^(Alpaca|Polygon|OANDA)\b/.test(String(name));
 
 // ---------- requests ----------
 const feedError = (message, status) =>
@@ -188,7 +202,7 @@ async function getFeed(name, url, headers) {
     let detail = "";
     try {
       const j = await res.json();
-      detail = String(j.message || j.error || "").slice(0, 200);
+      detail = String(j.message || j.errorMessage || j.error || "").slice(0, 200);
     } catch {
       /* no body */
     }
@@ -486,6 +500,46 @@ export function futuresChain(root, tf, limit) {
   return [[`Polygon ${contract}`, () => polygonFuturesCandles(contract, tf, limit)]];
 }
 
+// ---------- OANDA (forex, metals, your account's other instruments) ----------
+const OANDA_TF = { "1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1D": "D" };
+
+export async function oandaCandles(instrument, tf, limit) {
+  const k = oandaCfg();
+  if (!k) throw new Error("No OANDA token in data/feeds.json");
+  const base = nativeBase(tf, Object.keys(OANDA_TF));
+  if (!base) throw new Error(`OANDA can't build a ${tf} chart`);
+  const ratio = Math.max(1, Math.round(parseTf(tf).seconds / parseTf(base).seconds));
+  const q = new URLSearchParams({
+    price: "M",
+    granularity: OANDA_TF[base],
+    count: String(Math.min(limit * ratio + ratio, 5000)), // OANDA's most per request
+  });
+  // Daily bars start at UTC midnight, like every other source, rather than OANDA's 5pm New York.
+  if (base === "1D") {
+    q.set("dailyAlignment", "0");
+    q.set("alignmentTimezone", "UTC");
+  }
+  const j = await getFeed(
+    "OANDA",
+    `${oandaHost()}/v3/instruments/${encodeURIComponent(instrument)}/candles?${q}`,
+    { Authorization: `Bearer ${k.token}` },
+  );
+  const out = [];
+  for (const c of j?.candles || []) {
+    const t = Math.floor(Date.parse(c.time) / 1000);
+    if (!Number.isFinite(t) || !c.mid) continue;
+    out.push({ time: t, open: +c.mid.o, high: +c.mid.h, low: +c.mid.l, close: +c.mid.c, volume: c.volume || 0 });
+  }
+  return finish(out, base, tf, limit);
+}
+
+// Your OANDA key in front of the public sources for a forex pair or metal: EURUSD is EUR_USD there.
+export function fxChain(pair, tf, limit) {
+  if (!oandaCfg()) return [];
+  const instrument = `${pair.slice(0, 3)}_${pair.slice(3)}`;
+  return [["OANDA", () => oandaCandles(instrument, tf, limit)]];
+}
+
 // For `npm run doctor`: does each key you added work?
 export function probes() {
   const out = {};
@@ -510,5 +564,10 @@ export function probes() {
           Authorization: `Bearer ${polygonCfg().apiKey}`,
         },
       );
+  if (oandaCfg())
+    out["OANDA (your key)"] = () =>
+      getFeed("OANDA", `${oandaHost()}/v3/instruments/EUR_USD/candles?granularity=D&count=1`, {
+        Authorization: `Bearer ${oandaCfg().token}`,
+      });
   return out;
 }

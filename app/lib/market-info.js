@@ -192,7 +192,7 @@ export async function news(symbol) {
   if (["BINANCE", "COINBASE", "KRAKEN"].includes(sym.exchange)) {
     const base =
       sym.ticker
-        .replace(/-/g, "")
+        .replace(/-|\.P$/g, "")
         .replace(/(USDT|USDC|FDUSD|USD|BTC|ETH|EUR)$/, "")
         .replace(/^XBT$/, "BTC") || "BTC";
     const all = await cryptoNews();

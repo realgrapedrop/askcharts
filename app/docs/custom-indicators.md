@@ -72,6 +72,36 @@ Return an object with one plain array per output, each exactly as long as `bars`
 
 Only look at bars up to the one you're computing (`i` and before). Looking ahead makes an indicator look better on the chart than it could ever be live.
 
+## Alerts from your indicator (Pine's `alertcondition`)
+
+Alerts watch an indicator's outputs, so an alert signal is just another output: an array that is `1` on a bar where the signal is true and `0` where it isn't. Each Pine `alertcondition(cond, "Buy", ...)` becomes one output like that. [`docs/alert-example.js`](alert-example.js) is a complete one to copy:
+
+```js
+outputs: [{ key: 'buy', label: 'Buy signal', kind: 'histogram' }, { key: 'sell', label: 'Sell signal', kind: 'histogram' }],
+calc(bars, p, ta) {
+  const close = ta.source(bars, 'close');
+  const up = ta.crossover(ta.ema(close, p.fast), ta.ema(close, p.slow));
+  return { buy: up.map((x) => (x ? 1 : 0)), sell: /* the same for the sell condition */ };
+},
+```
+
+Then set the alert:
+
+- **In the app:** Create alert, pick your indicator on the left, choose the output (`buy`), set it to "greater than" Value `0`, and pick "Once per bar close" so it only fires on a finished bar. To run it on every symbol of a watchlist, click the symbol at the top of the dialog and pick the list, or use Add alert on the list… in the watchlist's list menu.
+- **From code:** `POST /api/alerts` (see [`api.md`](api.md)) with your indicator under `indicators` and its output as `key.output`:
+
+```json
+{
+  "symbol": "BINANCE:BTCUSDT", "tf": "1h",
+  "indicators": { "sig": { "id": "custom:alert-example", "params": { "fast": 9, "slow": 21 } } },
+  "conditions": [{ "left": "sig.buy", "op": ">", "right": 0 }],
+  "trigger": "oncePerBarClose",
+  "message": "Buy signal"
+}
+```
+
+The id is `custom:` plus the file name without `.js`. Plotted values work too: `{ "left": "sig.fast", "op": "crossesAbove", "right": "sig.slow" }`.
+
 ## Registering it
 
 Save the file as `custom/<name>.js`. Two ways:

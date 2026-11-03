@@ -4,6 +4,10 @@
 // { symbol: 'BINANCE:BTCUSDT', tf: '1h', left: 'close', op: 'crossesAbove', right: 100000,
 //   indicators: {}, trigger: 'once' | 'oncePerBar' | 'oncePerBarClose', webhook: 'https://...',
 //   message: 'BTC broke 100k' }
+//
+// Give `watchlist: 'Main'` instead of a symbol and the alert checks every symbol on that list
+// (read fresh each time, so edits to the list count). "Only once" then means once per symbol, and the alert
+// stops when every symbol on the list has fired, as on TradingView.
 
 import crypto from "node:crypto";
 import { getCandles } from "./providers.js";
@@ -42,7 +46,9 @@ export const conditionsOf = (a) =>
   Array.isArray(a.conditions) && a.conditions.length ? a.conditions : [{ left: a.left, op: a.op, right: a.right }];
 
 function validate(a) {
-  if (!a.symbol || typeof a.symbol !== "string") throw bad("An alert needs a symbol");
+  if (a.watchlist !== undefined && (typeof a.watchlist !== "string" || !a.watchlist))
+    throw bad("watchlist must be the name of one of your watchlists");
+  if (!a.watchlist && (!a.symbol || typeof a.symbol !== "string")) throw bad("An alert needs a symbol or a watchlist");
   const conds = conditionsOf(a);
   if (conds.length > 5) throw bad("An alert can have up to 5 conditions");
   if (!["all", "any"].includes(a.match || "all")) throw bad('match must be "all" or "any"');
@@ -67,7 +73,8 @@ export function add(input) {
   if (!input || typeof input !== "object") throw bad("Send the alert as a JSON object");
   const a = {
     id: crypto.randomUUID(),
-    symbol: input.symbol,
+    symbol: input.watchlist ? "" : input.symbol,
+    watchlist: input.watchlist || undefined,
     tf: input.tf || "1m",
     left: input.left ?? input.conditions?.[0]?.left ?? "close",
     op: input.op || input.conditions?.[0]?.op || "crossesAbove",
@@ -95,8 +102,12 @@ export function add(input) {
 export function update(id, patch) {
   const a = alerts.find((x) => x.id === id);
   if (!a) throw bad("No such alert", 404);
-  validate({ ...a, ...patch });
+  // watchlist: null turns a list's alert back into one symbol's
+  const next = { ...a, ...patch };
+  if (patch?.watchlist === null) delete next.watchlist;
+  validate(next);
   Object.assign(a, patch, { id });
+  if (patch?.watchlist === null) delete a.watchlist;
   save();
   return a;
 }
@@ -106,7 +117,7 @@ export function remove(id) {
   save();
 }
 
-export function describe(a) {
+export function describe(a, symbol = a.symbol) {
   const ops = {
     ">": "is above",
     "<": "is below",
@@ -132,7 +143,8 @@ export function describe(a) {
       ? `${name(c.left)} ${ops[c.op]} ${name(c.right2)} to ${name(c.right)}`
       : `${name(c.left)} ${ops[c.op] || c.op} ${name(c.right)}${/^moving/.test(c.op) ? ` within ${c.bars || 1} bars` : ""}`,
   );
-  return a.message || `${a.symbol} ${a.tf}: ${parts.join(a.match === "any" ? " or " : " and ")}`;
+  if (a.message) return a.watchlist ? `${symbol}: ${a.message}` : a.message;
+  return `${symbol} ${a.tf}: ${parts.join(a.match === "any" ? " or " : " and ")}`;
 }
 
 async function sendWebhook(url, text, payload) {
@@ -152,19 +164,22 @@ async function sendWebhook(url, text, payload) {
 }
 
 // TradingView's placeholders in an alert's message: {{ticker}}, {{close}}, {{interval}} and so on.
-function fillIn(text, a, bar) {
-  const t = String(a.symbol).split(":").pop();
+function fillIn(text, a, bar, symbol = a.symbol) {
+  const t = String(symbol).split(":").pop();
   return String(text).replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) =>
-    ({ ticker: t, exchange: String(a.symbol).split(":")[0], interval: a.tf, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume, time: new Date(bar.time * 1000).toISOString(), timenow: new Date().toISOString() })[k] ?? m,
+    ({ ticker: t, exchange: String(symbol).split(":")[0], interval: a.tf, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume, time: new Date(bar.time * 1000).toISOString(), timenow: new Date().toISOString() })[k] ?? m,
   );
 }
 
-async function fire(a, bar, price) {
-  const text = a.message ? `${a.name ? `${a.name}: ` : ""}${fillIn(a.message, a, bar)}` : `${a.name || "Alert"}: ${describe(a)} (price ${price})`;
+async function fire(a, bar, price, symbol = a.symbol) {
+  // a watchlist alert says which of its symbols fired
+  const text = a.message
+    ? `${a.name ? `${a.name}: ` : ""}${a.watchlist ? `${symbol}: ` : ""}${fillIn(a.message, a, bar, symbol)}`
+    : `${a.name || "Alert"}: ${describe(a, symbol)} (price ${price})`;
   const event = {
     id: crypto.randomUUID(),
     alertId: a.id,
-    symbol: a.symbol,
+    symbol,
     tf: a.tf,
     name: a.name || "",
     text,
@@ -175,7 +190,7 @@ async function fire(a, bar, price) {
   };
   a.fired += 1;
   a.lastFiredAt = event.at;
-  if (a.trigger === "once") a.active = false;
+  if (a.trigger === "once" && !a.watchlist) a.active = false;
   if (a.webhook) {
     try {
       await sendWebhook(a.webhook, text, { alert: a, event });
@@ -229,11 +244,14 @@ async function evaluateOnce() {
       a.expired = true;
     }
   const active = alerts.filter((a) => a.active);
+  const lists = store.read("state", {}).watchlists || {};
   const groups = new Map();
   for (const a of active) {
-    const k = `${a.symbol}|${a.tf}`;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(a);
+    for (const symbol of a.watchlist ? [...new Set(lists[a.watchlist] || [])] : [a.symbol]) {
+      const k = `${symbol}|${a.tf}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(a);
+    }
   }
   for (const [k, group] of groups) {
     const [symbol, tf] = k.split("|");
@@ -255,6 +273,18 @@ async function evaluateOnce() {
         const i =
           a.trigger === "oncePerBarClose" ? bars.length - 2 : bars.length - 1;
         const bar = bars[i];
+        if (a.watchlist) {
+          // each symbol on the list on its own: "once" is once per symbol, the others per symbol's bar
+          // (once a minute: the time it last fired for that symbol)
+          a.lastBars ||= {};
+          const last = a.lastBars[symbol];
+          if (a.trigger === "once" ? symbol in a.lastBars : a.trigger === "oncePerMinute" ? last && Date.now() - last < 60000 : last === bar.time) continue;
+          if (!test(i)) continue;
+          a.lastBars[symbol] = a.trigger === "oncePerMinute" ? Date.now() : bar.time;
+          await fire(a, bar, bar.close, symbol);
+          continue;
+        }
+        if (!a.active) continue;
         if (a.trigger === "oncePerMinute") {
           if (a.lastFiredAt && Date.now() - Date.parse(a.lastFiredAt) < 60000) continue;
         } else if (a.trigger !== "once" && a.lastBar === bar.time) continue;
@@ -267,6 +297,12 @@ async function evaluateOnce() {
       }
     }
   }
+  // a list's "Only once" alert stops once it has fired for every symbol on the list
+  for (const a of active)
+    if (a.watchlist && a.trigger === "once" && a.active) {
+      const syms = [...new Set(lists[a.watchlist] || [])];
+      if (syms.length && syms.every((s) => s in (a.lastBars || {}))) a.active = false;
+    }
   save();
 }
 

@@ -2196,6 +2196,11 @@ body .pane .chart.dr-point, body .pane .chart.dr-point * { cursor: pointer !impo
 .ad-sym:hover { background: var(--hover); }
 .ad-sym b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-sym .wl-badge { width: 18px; height: 18px; font-size: 10px; }
+/* an alert on a watchlist: the list's icon and size in the header, the triggers' sub lines, the note above the conditions */
+.ad-sym small { color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
+.ad-list.ad-symlist { max-width: 320px; }
+.ad-list.ad-symlist button { height: auto; row-gap: 2px; padding-top: 7px; padding-bottom: 7px; }
+.ad-listnote { margin: 0 0 12px; }
 .ad-card .modal-head .ad-hbtn, .ad-hbtn { width: 32px; height: 32px; display: grid; place-items: center; flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; }
 .ad-hbtn:hover { background: var(--hover); }
 .ad-hbtn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.4; }

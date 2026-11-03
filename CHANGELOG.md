@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.24 (2026-11-02)
+
+Minute and hour charts draw again after the clocks went back, and one alert can watch a whole watchlist.
+
+- **Charts after the clock change.** When the clocks went back (25 October in Europe, 1 November in the US), 1:00
+  to 2:00 AM happened twice, and a bar from each pass landed on the same time on the chart. The chart library
+  stops drawing when that happens. So charts of 1 hour and shorter that reached back over that night stayed empty,
+  and a switch to dark or light mode left parts of them, like the indicator panes, in the old colours. The
+  repeated hour now fits into one hour on the chart and its labels keep the real times, so 1:00 AM shows twice,
+  as it happened. Daily charts and charts set to UTC never had the problem.
+- **Alerts on a whole watchlist.** Open the menu on a watchlist's name and pick Add alert on the list…, or pick a
+  list in the new Symbols dropdown at the top of Create alert, as on TradingView. The alert checks every symbol on
+  the list and each message names the symbol that fired. The Alerts panel lists it as Watchlist and the list's
+  name. Set to Once only, it stops after every symbol on the list has fired once, and renaming a list keeps its
+  alerts on it. The API and custom indicator docs cover list alerts, and app/docs/alert-example.js is an indicator
+  for alerts to watch, like Pine's alertcondition().
+- **Crypto perpetual futures.** Search for BTCUSDT.P or BTC.P to chart Binance's USD-M perpetuals, with Bybit as
+  the backup. Both turn away requests from US addresses, so an AskCharts running in the US can't show them.
+- **A note when the chart library is blocked.** If an ad blocker or browser shield stops the chart library from
+  loading, a note at the top says so and how to fix it, where before the chart just stayed empty. It shows on a
+  server with the sign in too.
+
 ## 0.1.23 (2026-10-24)
 
 Daily stock charts get the official closes, search finds the stock you typed, and a history download that's

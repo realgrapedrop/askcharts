@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 process.env.QT_OFFLINE = '1';
 process.env.QT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'qt-test-'));
@@ -20,6 +21,21 @@ test('health and the app page load', async () => {
   assert.ok(page.includes('AskCharts'));
   const lib = await fetch(`${base}/vendor/lightweight-charts.standalone.production.js`);
   assert.equal(lib.status, 200);
+});
+
+test('the page says so when the chart library is blocked', async () => {
+  const page = await (await fetch(`${base}/`)).text();
+  // the check is a file of its own (the sign-in gateway's policy runs no inline script), straight after the library
+  assert.match(page, /lightweight-charts[^"]*"><\/script>\s*<script src="\/js\/chart-blocked\.js"><\/script>/);
+  const script = await (await fetch(`${base}/js/chart-blocked.js`)).text();
+  const run = (window) => {
+    const added = [];
+    const document = { createElement: () => ({ style: {} }), body: { appendChild: (el) => added.push(el) } };
+    vm.runInNewContext(script, { window, document });
+    return added;
+  };
+  assert.match(run({})[0].textContent, /ad blocker/);
+  assert.equal(run({ LightweightCharts: {} }).length, 0);
 });
 
 test('candles come back sorted with OHLCV', async () => {
@@ -207,6 +223,34 @@ test('slash notation: pairs stay pairs, two symbols make a ratio', async () => {
   const sp = await (await fetch(`${base}/api/candles?symbol=${encodeURIComponent('BTCUSDT/ETHUSDT')}&tf=1D&limit=20`)).json();
   assert.equal(sp.candles.length, 20);
   assert.ok(Math.abs(sp.candles.at(-1).close - 1) < 1e-9, 'offline fixture serves the same bars for both sides');
+});
+
+test('a watchlist alert checks every symbol on the list, once each', async () => {
+  await fetch(`${base}/api/state`, { method: 'PUT', headers: H, body: JSON.stringify({ watchlists: { Crypto: ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT'] } }) });
+  const a = await (await fetch(`${base}/api/alerts`, { method: 'POST', headers: H, body: JSON.stringify({ watchlist: 'Crypto', tf: '1D', left: 'close', op: '>', right: 0 }) })).json();
+  assert.equal(a.watchlist, 'Crypto');
+  await fetch(`${base}/api/alerts/check`, { method: 'POST', headers: H });
+  await fetch(`${base}/api/alerts/check`, { method: 'POST', headers: H });
+  const fired = (await (await fetch(`${base}/api/alerts/log`)).json()).filter((e) => e.alertId === a.id);
+  assert.deepEqual(fired.map((e) => e.symbol).sort(), ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT']);
+  assert.ok(fired.every((e) => e.text.includes(e.symbol)), 'each message names its symbol');
+  const none = await fetch(`${base}/api/alerts`, { method: 'POST', headers: H, body: JSON.stringify({ tf: '1D', left: 'close', op: '>', right: 0 }) });
+  assert.equal(none.status, 400);
+  await fetch(`${base}/api/alerts/${a.id}`, { method: 'DELETE', headers: H });
+});
+
+// as on TradingView, a list's "Only once" alert stops when every symbol has fired; an edit can make it one symbol's
+test('a watchlist alert on Only once stops after every symbol fires, and can become one symbol\'s', async () => {
+  await fetch(`${base}/api/state`, { method: 'PUT', headers: H, body: JSON.stringify({ watchlists: { Crypto: ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT'] } }) });
+  const a = await (await fetch(`${base}/api/alerts`, { method: 'POST', headers: H, body: JSON.stringify({ watchlist: 'Crypto', tf: '1D', left: 'close', op: '>', right: 0, trigger: 'once' }) })).json();
+  await fetch(`${base}/api/alerts/check`, { method: 'POST', headers: H });
+  const after = (await (await fetch(`${base}/api/alerts`)).json()).find((x) => x.id === a.id);
+  assert.deepEqual(Object.keys(after.lastBars).sort(), ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT']);
+  assert.equal(after.active, false);
+  const one = await (await fetch(`${base}/api/alerts/${a.id}`, { method: 'PATCH', headers: H, body: JSON.stringify({ watchlist: null, symbol: 'BINANCE:BTCUSDT', active: true }) })).json();
+  assert.equal(one.symbol, 'BINANCE:BTCUSDT');
+  assert.ok(!('watchlist' in one));
+  await fetch(`${base}/api/alerts/${a.id}`, { method: 'DELETE', headers: H });
 });
 
 test('multi-condition alerts: all must hold, or any, and five at most', async () => {

@@ -19,7 +19,7 @@ import { visibleOn } from "./indsettings.js";
 import { rangeBounds } from "./strategyreport.js";
 import { BandFill } from "./indfill.js";
 import { EmptyNote } from "./indempty.js";
-import { LINE_STYLE, colorOf, zoneOf, tzOffset, fromZone, fmtDate, fmtClock, precisionFormatter, minMoveOf, quoteCurrency } from "./chartsettings.js";
+import { LINE_STYLE, colorOf, zoneOf, tzOffset, chartTime, chartToUtc, fmtDate, fmtClock, precisionFormatter, minMoveOf, quoteCurrency } from "./chartsettings.js";
 import { ChartExtras, marketState } from "./chartextras.js";
 import { StyleSeries, CUSTOM_TYPES, TYPE_GROUPS, UNAVAILABLE } from "./charttypes.js";
 
@@ -242,7 +242,7 @@ export class ChartPane {
   // Time axis labels in 12 or 24 hours (the date parts keep the library's own labels).
   tickLabel(t, type) {
     if (typeof t !== "number" || type < 3) return null;
-    return fmtClock(t, this.cs.hours === "12", type === 4);
+    return fmtClock(this.wallOf(t), this.cs.hours === "12", type === 4);
   }
 
   createChart() {
@@ -802,7 +802,7 @@ export class ChartPane {
     return zoneOf(this.cs, this.cfg.symbol);
   }
   fromChart(t) {
-    return isIntraday(this.cfg.tf) ? fromZone(this.zone, t) : t;
+    return isIntraday(this.cfg.tf) ? chartToUtc(this.zone, t) : t;
   }
   get step() {
     return this.times.length > 1
@@ -810,7 +810,14 @@ export class ChartPane {
       : parseTf(this.cfg.tf).seconds;
   }
   toChart(t) {
-    return isIntraday(this.cfg.tf) ? t + tzOffset(this.zone, t) : t;
+    return isIntraday(this.cfg.tf) ? chartTime(this.zone, t) : t;
+  }
+  // A chart time as the zone's true wall clock, for labels: the same time except inside the hour the clocks go
+  // back, which chartTime squeezes (that hour reads 1:00 to 1:59 twice, as it happened)
+  wallOf(t) {
+    if (!isIntraday(this.cfg.tf)) return t;
+    const u = this.fromChart(t);
+    return u + tzOffset(this.zone, u);
   }
 
   logicalOf(utc) {
@@ -872,6 +879,7 @@ export class ChartPane {
   // A chart time (already in the chart's zone) the way the crosshair label shows it.
   formatTime(t) {
     if (typeof t !== "number") return "";
+    t = this.wallOf(t);
     const cs = this.cs,
       sec = parseTf(this.cfg.tf).seconds,
       date = fmtDate(t, cs.dateFormat, cs.dayOfWeek);
@@ -2302,14 +2310,15 @@ export class ChartPane {
     const wsTf = BINANCE_WS_TF[this.cfg.tf];
     if (ex === "BINANCE" && this.provider === "Binance" && wsTf)
       this.openSocket(ticker(this.cfg.symbol).toLowerCase(), wsTf, 0);
+    else if (ex === "BINANCE" && this.provider === "Binance futures" && wsTf && wsTf !== "1s")
+      this.openSocket(ticker(this.cfg.symbol).toLowerCase().replace(/\.p$/, ""), wsTf, 0, ["wss://fstream.binance.com/ws/"]);
     else this.poll();
   }
 
-  openSocket(sym, interval, hostIdx) {
-    const hosts = [
-      "wss://stream.binance.com:9443/ws/",
-      "wss://data-stream.binance.vision/ws/",
-    ];
+  openSocket(sym, interval, hostIdx, hosts = [
+    "wss://stream.binance.com:9443/ws/",
+    "wss://data-stream.binance.vision/ws/",
+  ]) {
     if (hostIdx >= hosts.length) return this.poll();
     let opened = false;
     const ws = new WebSocket(`${hosts[hostIdx]}${sym}@kline_${interval}`);
@@ -2335,7 +2344,7 @@ export class ChartPane {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      if (!opened) this.openSocket(sym, interval, hostIdx + 1);
+      if (!opened) this.openSocket(sym, interval, hostIdx + 1, hosts);
       else this.liveTimer = setTimeout(() => this.startLive(), 3000);
     };
   }

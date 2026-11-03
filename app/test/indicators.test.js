@@ -221,6 +221,18 @@ test('the template and the bundled example follow the custom indicator format', 
   assert.deepEqual(I.indicatorProblems(ex), []);
 });
 
+test('the alert example indicator follows the format and an alert on its output fires on its signal bars', async () => {
+  const { conditionFn } = await import('../public/lib/backtest.js');
+  const ex = (await import('../docs/alert-example.js')).default;
+  assert.deepEqual(I.indicatorProblems(ex), []);
+  I.registerIndicator({ ...ex, id: 'custom:alert-example' });
+  const out = I.compute('custom:alert-example', bars);
+  const fired = conditionFn(bars, { sig: { id: 'custom:alert-example', params: {} } })({ left: 'sig.buy', op: '>', right: 0 });
+  const signalBars = out.buy.flatMap((v, i) => (v === 1 ? [i] : []));
+  assert.ok(signalBars.length > 0, 'the fixture has at least one buy signal');
+  assert.deepEqual(bars.flatMap((_, i) => (fired(i) ? [i] : [])), signalBars);
+});
+
 test('a malformed custom indicator is refused, with each problem named', () => {
   const good = {
     name: 'Ok',

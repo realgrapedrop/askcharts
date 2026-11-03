@@ -671,7 +671,7 @@ export function initPanels(app) {
       names
         .map((n) => `<button data-list="${esc(n)}" class="${n === cur ? "on" : ""}"><span>${esc(n)}</span><span class="muted">${app.state.watchlists[n].length}</span></button>`)
         .join("") +
-      '<hr><button data-act="new">Create new list…</button><button data-act="rename">Rename list…</button><button data-act="del" class="down">Delete list</button>';
+      '<hr><button data-act="alert">Add alert on the list…</button><hr><button data-act="new">Create new list…</button><button data-act="rename">Rename list…</button><button data-act="del" class="down">Delete list</button>';
     const a = anchor.getBoundingClientRect(),
       s = sideEl.getBoundingClientRect();
     menuEl.style.left = `${a.left - s.left}px`;
@@ -682,6 +682,8 @@ export function initPanels(app) {
       const b = e.target.closest("button");
       if (!b) return;
       closeMenu();
+      // TradingView's watchlist alert: one alert that checks every symbol on this list
+      if (b.dataset.act === "alert") return openAlertCard(app, { watchlist: cur });
       const lists = app.state.watchlists;
       if (b.dataset.list != null) app.state.activeWatchlist = b.dataset.list;
       else if (b.dataset.act === "new") {
@@ -694,6 +696,12 @@ export function initPanels(app) {
         if (!n || n === cur || lists[n]) return;
         app.state.watchlists = Object.fromEntries(Object.entries(lists).map(([k, v]) => [k === cur ? n : k, v]));
         app.state.activeWatchlist = n;
+        // alerts on the list follow its new name
+        api
+          .get("/api/alerts")
+          .then((all) => Promise.all(all.filter((a) => a.watchlist === cur).map((a) => api.patch(`/api/alerts/${a.id}`, { watchlist: n }))))
+          .then(() => sideTab === "alerts" && renderAlerts())
+          .catch(() => {});
       } else if (b.dataset.act === "del") {
         if (names.length < 2) return app.toast("Keep at least one list.");
         if (!confirm(`Delete the list "${cur}"?`)) return;
@@ -864,14 +872,16 @@ export function initPanels(app) {
       }
       box.innerHTML =
         list
-          .filter((a) => hit(a.symbol, a.name, a.message, describeAlert(a, false)))
+          .filter((a) => hit(a.symbol, a.watchlist, a.name, a.message, describeAlert(a, false)))
           .map((a) => {
             const cond = describeAlert(a, false);
             const trig = { once: "once only", oncePerBar: "every time", oncePerBarClose: "once per bar close", oncePerMinute: "once per minute" }[a.trigger] || a.trigger;
             const title = a.name || a.message || cond;
+            // a watchlist alert has no symbol of its own (the vendor's alerts.js sets it to "")
+            const where = a.watchlist ? `Watchlist: ${a.watchlist}${app.state.watchlists?.[a.watchlist] ? "" : " (deleted)"}` : ticker(a.symbol);
             const state = a.active ? '<span class="up">Active</span>' : a.expired ? '<span class="down">Expired</span>' : '<span class="muted">Stopped</span>';
             const until = a.expires && !a.expired ? ` · until ${new Date(a.expires).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "";
-            return `<div class="al-item" data-id="${a.id}"><div class="al-title">${esc(title)}</div>${title !== cond ? `<div class="al-cond">${esc(ticker(a.symbol))} ${esc(cond)}</div>` : ""}<div class="al-meta">${badge(a.symbol)}<span>${esc(ticker(a.symbol))}</span> · ${state} · ${esc(a.tf)} · ${esc(trig)}${until}${a.webhook ? " · webhook" : ""}${a.fired ? ` · fired ${a.fired}x` : ""}</div><div class="al-acts"><button data-act="edit" title="Edit">${ICON_EDIT}</button><button data-act="toggle" title="${a.active ? "Stop" : "Restart"}">${a.active ? ICON_PAUSE : ICON_PLAY}</button><button data-act="del" title="Delete">${ICON_TRASH}</button></div></div>`;
+            return `<div class="al-item" data-id="${a.id}"><div class="al-title">${esc(title)}</div>${title !== cond ? `<div class="al-cond">${esc(where)} ${esc(cond)}</div>` : ""}<div class="al-meta">${badge(a.watchlist || a.symbol)}<span>${esc(where)}</span> · ${state} · ${esc(a.tf)} · ${esc(trig)}${until}${a.webhook ? " · webhook" : ""}${a.fired ? ` · fired ${a.fired}x` : ""}</div><div class="al-acts"><button data-act="edit" title="Edit">${ICON_EDIT}</button><button data-act="toggle" title="${a.active ? "Stop" : "Restart"}">${a.active ? ICON_PAUSE : ICON_PLAY}</button><button data-act="del" title="Delete">${ICON_TRASH}</button></div></div>`;
           })
           .join("") ||
         `<div class="pad hint-text">${q ? "No matches." : "No alerts yet. Press + to create one. They run inside the app, so they keep firing with this tab closed as long as the app is running."}</div>`;
@@ -894,6 +904,7 @@ export function initPanels(app) {
         await api.patch(`/api/alerts/${id}`, {
           active: !a.active,
           lastBar: null,
+          lastBars: {},
         });
       renderAlerts();
     };

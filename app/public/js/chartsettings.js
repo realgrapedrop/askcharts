@@ -139,6 +139,37 @@ export function tzOffset(tz, sec) {
 }
 // A wall-clock time in the zone back to UTC (right everywhere except inside a clock change).
 export const fromZone = (tz, wall) => wall - tzOffset(tz, wall - tzOffset(tz, wall));
+// The clocks going back within two hours of a UTC time: { at, d, off }, the UTC second the zone's offset drops, by
+// how much, and the offset after it; or null. Offsets change on the quarter hour, the grid tzOffset reads them on.
+function fallBackNear(tz, sec) {
+  let lo = Math.floor(sec / 900) * 900 - 7200,
+    hi = lo + 14400;
+  const a = tzOffset(tz, lo),
+    b = tzOffset(tz, hi);
+  if (!(a > b)) return null;
+  while (hi - lo > 900) {
+    const mid = lo + Math.floor((hi - lo) / 1800) * 900;
+    if (tzOffset(tz, mid) === a) lo = mid;
+    else hi = mid;
+  }
+  return { at: hi, d: a - b, off: b };
+}
+// A UTC time as a chart time: the zone's wall clock, so the time scale reads local time. Where the clocks go back,
+// an hour happens twice; those two hours share the one wall-clock hour, each bar at half the spacing, so chart times
+// keep going up (the chart library needs them in order; a bar from each pass on the same time stopped intraday
+// charts drawing after 1 November) and every other bar keeps its true local time.
+export function chartTime(tz, sec) {
+  const fb = fallBackNear(tz, sec);
+  if (fb && sec >= fb.at - fb.d && sec < fb.at + fb.d) return fb.at + fb.off + (sec - (fb.at - fb.d)) / 2;
+  return sec + tzOffset(tz, sec);
+}
+// A chart time back to UTC: chartTime's inverse.
+export function chartToUtc(tz, t) {
+  const u = fromZone(tz, t),
+    fb = fallBackNear(tz, u);
+  if (fb && t >= fb.at + fb.off && t < fb.at + fb.off + fb.d) return fb.at - fb.d + (t - (fb.at + fb.off)) * 2;
+  return u;
+}
 
 // "Exchange": crypto runs on UTC, US stocks and FX on New York, CME futures on Chicago.
 export function exchangeZone(symbol) {

@@ -22,6 +22,7 @@ const KEYS = {
   keyId: "PKTESTKEYID",
   secretKey: "TESTSECRET",
   apiKey: "POLYTESTKEY",
+  token: "OANDATESTTOKEN",
 };
 
 // 5-minute bars for one day, 08:00 to 19:55 New York (EDT, UTC-4): pre-market, the session, after hours.
@@ -40,6 +41,7 @@ const bar = (t, k) => ({
 
 let alpacaStatus = 200;
 let polygonFuturesStatus = 200;
+let oandaStatus = 200;
 // Nasdaq and Yahoo not answering (500, not 429: a 429 rests Yahoo for minutes, for the tests after too)
 let publicDown = false;
 const calls = [];
@@ -76,6 +78,20 @@ globalThis.fetch = async (url, opts = {}) => {
       .map((t, i) => ({ window_start: t * 1e9, open: 20000 + i, high: 20001 + i, low: 19999 + i, close: 20000.5 + i, volume: 50 }))
       .reverse();
     return Response.json({ results: rows, status: "OK" });
+  }
+  if (u.host === "api-fxpractice.oanda.com" || u.host === "api-fxtrade.oanda.com") {
+    if (oandaStatus !== 200) return Response.json({ errorMessage: "Insufficient authorization" }, { status: oandaStatus });
+    const iso = (t) => new Date(t * 1000).toISOString().replace(".000Z", ".000000000Z");
+    const daily = u.searchParams.get("granularity") === "D";
+    const times = daily ? Array.from({ length: 5 }, (_, i) => DAY + i * 86400) : fiveMin;
+    return Response.json({
+      candles: times.map((t, i) => ({
+        time: iso(t),
+        complete: true,
+        volume: 12,
+        mid: { o: String(2000 + i), h: String(2001 + i), l: String(1999 + i), c: String(2000.5 + i) },
+      })),
+    });
   }
   if (publicDown && ["api.nasdaq.com", "query1.finance.yahoo.com"].includes(u.host)) return new Response("down", { status: 500 });
   // Nasdaq's daily history: 30 days to DAY, official closes 200 and up; nothing yet today
@@ -127,6 +143,8 @@ const leaks = () =>
       {
         "data.alpaca.markets": [KEYS.keyId, KEYS.secretKey],
         "api.massive.com": [KEYS.apiKey],
+        "api-fxpractice.oanda.com": [KEYS.token],
+        "api-fxtrade.oanda.com": [KEYS.token],
       }[sentTo] || [];
     return Object.values(KEYS).some(
       (k) => carries.includes(k) && !own.includes(k),
@@ -320,4 +338,52 @@ test("a Polygon plan without futures falls back to the delayed chart, in plain w
   assert.equal(r.provider, "Yahoo (delayed)");
   assert.ok(r.notes.includes("Your Polygon plan doesn't include this, so this chart uses Yahoo (delayed)."), r.notes.join(" | "));
   polygonFuturesStatus = 200;
+});
+
+test("an OANDA token charts OANDA: symbols with mid prices, token in a header, practice server by default", async () => {
+  writeFeeds({ oanda: { token: KEYS.token } });
+  calls.length = 0;
+  const r = await P.getCandles("OANDA:NAS100_USD", "5m", 30);
+  assert.equal(r.provider, "OANDA");
+  assert.equal(r.candles.length, 30);
+  assert.equal(typeof r.candles[0].close, "number");
+  assert.ok(r.notes.some((n) => /not exchange data/.test(n)), r.notes.join(" | "));
+  const c = calls.find((x) => x.host === "api-fxpractice.oanda.com");
+  assert.ok(c.url.includes("/v3/instruments/NAS100_USD/candles?"), c.url);
+  assert.equal(c.headers.Authorization, `Bearer ${KEYS.token}`);
+  assert.deepEqual(leaks(), []);
+});
+
+test("a live OANDA account uses the live server, and daily bars land on UTC midnight", async () => {
+  writeFeeds({ oanda: { token: KEYS.token, account: "live" } });
+  calls.length = 0;
+  const r = await P.getCandles("OANDA:XAU_USD", "1D", 5);
+  const c = calls.find((x) => x.host === "api-fxtrade.oanda.com");
+  assert.ok(c.url.includes("dailyAlignment=0") && c.url.includes("alignmentTimezone=UTC"), c.url);
+  assert.equal(r.candles[0].time % 86400, 0);
+});
+
+test("an OANDA token goes first for forex and metals; gold isn't called a token chart", async () => {
+  writeFeeds({ oanda: { token: KEYS.token } });
+  calls.length = 0;
+  const fx = await P.getCandles("EURUSD", "15m", 10);
+  assert.equal(fx.provider, "OANDA");
+  assert.ok(calls.some((x) => x.url.includes("/v3/instruments/EUR_USD/candles?")));
+  const gold = await P.getCandles("XAUUSD", "15m", 10);
+  assert.equal(gold.provider, "OANDA");
+  assert.ok(!gold.notes.some((n) => /backed by real gold/.test(n)), gold.notes.join(" | "));
+});
+
+test("a refused OANDA token falls back to the public sources for forex and says why", async () => {
+  writeFeeds({ oanda: { token: KEYS.token } });
+  oandaStatus = 401;
+  const r = await P.getCandles("GBPUSD", "1h", 10);
+  assert.notEqual(r.provider, "OANDA");
+  assert.ok(r.notes.some((n) => n.startsWith("OANDA refused your key")), r.notes.join(" | "));
+  oandaStatus = 200;
+});
+
+test("OANDA: symbols without a token say what to do", async () => {
+  writeFeeds(null);
+  await assert.rejects(() => P.getCandles("OANDA:SPX500_USD", "1h", 10), /need your own OANDA token/);
 });
