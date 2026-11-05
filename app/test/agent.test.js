@@ -5,6 +5,18 @@ import assert from "node:assert/strict";
 import { toAnthropic } from "../lib/agent.js";
 import { AGENT_TOOLS, toolSpecs } from "../public/lib/agent-tools.js";
 import { levels, parseWhen, barIndexAt, summary } from "../public/lib/agent-analysis.js";
+import { md } from "../public/js/copilot.js";
+
+test("a table in an answer is drawn as one; rows without the dashes under the head stay text", () => {
+  const html = md("Before\n\n| | Strategy | Holding |\n|---|--:|:-:|\n| First 70% | **+294%** | +165% |\n| Last 30% | +11.7% |\nAfter");
+  assert.equal((html.match(/<tr>/g) || []).length, 3);
+  assert.match(html, /<p>Before<\/p><div class="cp-table"><table><thead><tr><th><\/th><th class="r">Strategy<\/th><th class="c">Holding<\/th><\/tr><\/thead>/);
+  assert.match(html, /<td class="r"><b>\+294%<\/b><\/td>/);
+  // a short row is filled out to the head's columns
+  assert.match(html, /<tr><td>Last 30%<\/td><td class="r">\+11\.7%<\/td><td class="c"><\/td><\/tr><\/tbody><\/table><\/div><p>After<\/p>$/);
+  assert.equal(md("| a | b |\n| <i>x</i> |"), "<p>| a | b |<br>| &lt;i&gt;x&lt;/i&gt; |</p>");
+  assert.equal(md("text\n| a |\n|---|"), '<p>text</p><div class="cp-table"><table><thead><tr><th>a</th></tr></thead><tbody></tbody></table></div>');
+});
 
 test("the conversation in Anthropic's form: calls, results first in the user turn, same roles merged", () => {
   const out = toAnthropic([
@@ -75,4 +87,20 @@ test("swings and the last swing on a zigzag", () => {
   assert.equal(r.lastSwing.from.price, 4.5);
   assert.equal(r.lastSwing.to.price, 30.5);
   assert.equal(r.lastSwing.to.bars_ago, 6);
+});
+
+test("the strategy tools: research reads, saving a script is a change with Undo, the guide knows the templates", async () => {
+  const by = Object.fromEntries(AGENT_TOOLS.map((t) => [t.name, t]));
+  for (const n of ["ask_person", "next_steps", "market_character", "script_check", "strategy_sweep", "strategy_scan"]) assert.equal(by[n]?.read, true, n);
+  // only the next steps end an answer
+  assert.deepEqual(AGENT_TOOLS.filter((t) => t.ends).map((t) => t.name), ["next_steps"]);
+  assert.ok(by.script_save && !by.script_save.read && !by.script_save.view);
+  const { guideText } = await import("../lib/copilot-guide.js");
+  const g = guideText();
+  assert.ok(!g.includes("%TEMPLATES%"));
+  for (const id of ["ma-cross", "supertrend", "trend-pullback"]) assert.ok(g.includes(`--- ${id} (`), id);
+  assert.match(g, /chosen on that same 30%, so its last-30% figure is optimistic/);
+  assert.match(g, /6\. End with next_steps: "Put it on the chart"/);
+  assert.match(g, /Create new, Write with AI… opens this panel/);
+  assert.match(g, /then Build a strategy for me \(that box\) and Pick the rules myself/);
 });

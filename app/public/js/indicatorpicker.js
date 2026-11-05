@@ -41,7 +41,7 @@ export function indicatorFavs(app) {
 // added from the catalog is yours to keep but shows its own author.
 function items(app) {
   const source = (d) => (d.pine ? app.state.pineScripts?.[d.id.slice(5)]?.source : null);
-  const ind = INDICATORS.map((d) => ({ key: d.id, kind: "ind", name: d.name, group: d.group || "Other", author: d.id.startsWith("custom:") || d.pine ? source(d)?.author || "You" : "", mine: d.id.startsWith("custom:") || !!d.pine, where: d.strategy ? "strategy" : d.overlay ? "on price" : "own pane", d }));
+  const ind = INDICATORS.map((d) => ({ key: d.id, kind: "ind", name: d.saved || d.name, group: d.group || "Other", author: d.id.startsWith("custom:") || d.pine ? source(d)?.author || "You" : "", mine: d.id.startsWith("custom:") || !!d.pine, where: d.strategy ? "strategy" : d.overlay ? "on price" : "own pane", d }));
   const strat = (app.panels?.strategyList?.() || []).map((s) => ({ key: `strategy:${s.src}`, kind: "strat", name: s.name, group: s.saved ? "Saved" : "Examples", author: s.saved ? "You" : "", mine: !!s.saved, where: "strategy", src: s.src, saved: s.saved }));
   return [...ind, ...strat];
 }
@@ -159,7 +159,8 @@ export function openIndicatorDialog(app) {
       }
     } else if (term) {
       kindChips();
-      const hits = byKind(all.filter((it) => `${it.name} ${it.key} ${it.group}`.toLowerCase().includes(term)));
+      // a saved script answers to its saved name and to the title in its code
+      const hits = byKind(all.filter((it) => `${it.name} ${it.d?.name || ""} ${it.key} ${it.group}`.toLowerCase().includes(term)));
       html = hits.length ? head + add(hits) : `<div class="ix-empty">No indicators or strategies match <b>${esc(term)}</b>.</div>`;
     } else if (nav === "favorites") {
       kindChips();

@@ -60,6 +60,19 @@ It returns `{ symbol, tf, provider, bars, from, to, stats, trades }`:
 
 Indicator ids are the built-in ones (`ema`, `rsi`, `macd`, `bb`...) and your own (`custom:<file name>`). `GET /api/indicators` lists every one with its inputs and outputs.
 
+## Pine scripts on the server
+
+The same Pine interpreter as the Pine Editor, for testing a script away from the chart. Each request runs in a worker thread of its own, stopped after 90 seconds or when the request closes, and at most two run at once (a third gets `503`). Bars come from the same sources as the chart: the last `years` (2 unless set, 0.25 to 20), at most 19,500 bars (fewer with `limit`), without one still forming. Up to 500 bars before them warm the indicators up (as the Strategy tester's bars before its testing period do), so trading starts on the first bar given back in `bars`. `short` is `"bars"` when the 19,500 cap (or `limit`) made the window shorter than the years asked, `"history"` when the history starts later, and `null` otherwise. `params` sets the script's inputs by key (`in1`, `in2`... in the order the script declares them) and `props` its Properties (`commission_value`, `commission_type`, `slippage`, `initial_capital`, `default_qty_type`, `default_qty_value`, `pyramiding`).
+
+The last 30% of the bars is kept back. Results come for the whole run, the first 70% (`train`) and the last 30% (`test`), each with `returnPct`, `buyHoldPct`, `trades`, `winRatePct`, `holdHours` (the median hours a trade was held), `maxDrawdownPct` and `sharpe`.
+
+| Request | What it does |
+|---|---|
+| `POST /api/pine/check` `{ code, symbol, tf, limit, years, params, props }` | Compiles and runs a script. An error comes back as `{ ok: false, error: { message, line } }`. An indicator gives its plots' last values; a strategy gives `whole`, `train` and `test`, its fees, `sizePct` (the share of the starting capital a typical trade uses) and `tinyOrder` when that's under 1% |
+| `POST /api/pine/sweep` `{ code, symbol, tf, limit, years, params, props, sweep: { in1: [10, 20, 30], in2: [...] } }` | Up to 50 versions of a strategy's inputs. The pick is the best Sharpe on the first 70% among versions with at least 3 closed trades there; only the pick's last 30% comes back, then the quant checks on it, with `quarters`: the pick 3 months at a time against buy and hold, on a year or more |
+| `POST /api/pine/scan` `{ symbol, tfs: ["4h", "1D"], limit, years, templates, fee, shorts }` | The Pine Editor's strategy templates on up to 3 intervals: each one's two main settings at 80%, 100% and 120%, picked on the first 70%, the picks ranked on the last 30%, with the number of versions tried. `shorts: true` turns on "Also trade short" in the kinds that have it |
+| `POST /api/market/profile` `{ symbol, tf, limit, years }` | A symbol's character on an interval: `trending`, `mean reverting` or `neither` (from variance ratios), volatility, the typical move and range per bar, buy and hold, the worst drop |
+
 ## Your own data files
 
 | Request | Does |

@@ -44,6 +44,7 @@ pick the provider, paste the key, press Test, pick a model, Ok. Then type what y
 - "Mark support and resistance on this chart"
 - "What does RSI say right now?"
 - "How do I compare two symbols?"
+- "Find a strategy for XRP"
 
 Each change it makes shows as a step with Undo. If you'd rather it ask before every change, tick "Ask
 before each change" in Settings, AskCharts AI.
@@ -55,7 +56,10 @@ before each change" in Settings, AskCharts AI.
 - **Paper trading:** the Paper trading tab under the chart, or the SELL and BUY buttons at the top left
   of the chart. It's practice money.
 - **Strategy tester:** add a strategy from Indicators (they have a small spark by their name) and the
-  Strategy tester tab shows how it would have done: profit, drawdown, every trade.
+  Strategy tester tab shows how it would have done: profit, drawdown, every trade. If you don't have a strategy
+  yet, click the script's name at the top of the Pine Editor and pick Strategy from a template… under Create new.
+  There are eight to add and they need no key, or you can describe one in the empty Strategy tester's box and
+  AskCharts AI builds it.
 
 ## More data
 

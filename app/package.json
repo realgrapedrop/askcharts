@@ -1,6 +1,6 @@
 {
   "name": "askcharts",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "description": "AskCharts: charts, backtests and an AI that works on the chart for you. Runs on your own computer or server.",
   "type": "module",
   "private": true,
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.js --open",
     "serve": "node server.js",
-    "test": "node --test test/indicators.test.js test/reference.test.js test/providers.test.js test/feeds.test.js test/series.test.js test/backtest.test.js test/server.test.js test/imports.test.js test/quant.test.js test/onchain.test.js test/datakeys.test.js test/alerts-onchain.test.js test/history-store.test.js test/ai-providers.test.js",
+    "test": "node --test test/indicators.test.js test/reference.test.js test/providers.test.js test/feeds.test.js test/series.test.js test/backtest.test.js test/server.test.js test/imports.test.js test/quant.test.js test/pinequant.test.js test/pinetemplates.test.js test/pinework.test.js test/pinerun.test.js test/onchain.test.js test/datakeys.test.js test/alerts-onchain.test.js test/history-store.test.js test/ai-providers.test.js",
     "test:live": "node --test test/live.test.js",
     "doctor": "node scripts/doctor.js",
     "compare": "node scripts/compare.js",

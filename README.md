@@ -22,23 +22,31 @@ Open the AskCharts AI panel (the robot on the right) and type. For example:
 - "Add NVDA and AMD to my watchlist"
 - "Add XRPL Activity"
 - "How do I set an alert when RSI crosses 70?"
+- "Find a strategy for XRP"
+- "Build me a strategy that buys when RSI crosses up through 30 and sells at 70"
 
 It works on the chart and the panels around it, the way you would. It changes the symbol, the interval, the chart
 type and the layout. It adds, changes and removes indicators. It draws, moves and deletes drawings. It compares
 symbols, starts bar replay, and edits watchlists and favorites. It also reads indicator values and looks at a picture
 of the chart to answer questions about it. Ask "how do I" and you get the steps instead.
 
+It can write Pine strategies for you too, and look for one that suits a coin or a stock. Ask it to find one and it
+tests eight kinds on the 1 hour, 4 hour and daily charts. The settings are picked on the first 70% of the bars, then
+scored against buy and hold on the last 30%, which they never saw. After that it runs the quant checks on what it
+found, and if nothing held up it says so instead of promising a profit.
+
 Every change it makes shows as a step you can undo. It asks before removing a lot at once, and you can have it ask
-before every change. It can't place trades, change your keys or settings, or write code. It explains what it sees
+before every change. It can't place trades or change your keys or settings. It explains what it sees
 but won't tell you to buy or sell.
 
 ## What's in it
 
 - 19 chart types, intervals from 1 second to 1 month, and up to 16 charts on screen
-- 89 indicators built in, a Pine Script editor for your own indicators and strategies, and community scripts to add
+- 89 indicators built in, a Pine Script editor for your own indicators and strategies, eight strategy templates,
+  and community scripts to add
 - Drawing tools: lines, channels, Fibonacci, patterns, shapes, text and more
 - Alerts, a screener, a heatmap, calendars, news and company financials
-- A strategy tester with a full report, bar replay and paper trading
+- A strategy tester with a full report and quant checks, bar replay and paper trading
 - XRPL On chain: the XRP Ledger's activity and payments under your chart (optional)
 
 Market data is free and needs no account or key. Crypto comes from Binance, Coinbase and Kraken. US stocks and ETFs

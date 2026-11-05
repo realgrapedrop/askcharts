@@ -1,5 +1,6 @@
 // TradingView's strategy report, in the Strategy tester: the strategy on the chart, then Metrics (Key
-// stats and the Performance chart) or Trades (every trade, entry and exit). It reads the result the
+// stats and the Performance chart), Trades (every trade, entry and exit) or Quant checks (the tester's
+// gold checks, on the script's own settings). It reads the result the
 // chart already computed (pane.indResults[uid].strategy), so it follows inputs, symbol and timeframe.
 // A testing period that starts before the chart's first bar runs here only, on more bars (TradingView's
 // deep backtesting). A script's title, order ids and comments come from strangers' code: they only go
@@ -7,6 +8,8 @@
 import { esc, download, ticker, api } from "./api.js";
 import { BY_ID } from "../lib/indicators.js";
 import { parseTf } from "../lib/series.js";
+import { numberInputs, pineChecks } from "../lib/pinequant.js";
+import { render as quantHtml } from "./quantui.js";
 
 const LW = window.LightweightCharts;
 const svg = (body, cls = "") => `<svg viewBox="0 0 28 28"${cls ? ` class="${cls}"` : ""}>${body}</svg>`;
@@ -15,6 +18,7 @@ const ICON = {
   chevron: svg('<path d="M10 12l4 4 4-4"/>', "sr-chev"),
   metrics: svg('<path d="M6 19l5-6 4 4 7-8"/>'),
   trades: svg('<rect x="6" y="7" width="16" height="14" rx="1.5"/><path d="M6 12h16M6 16.5h16M11.5 7v14"/>'),
+  checks: svg('<path d="M14 5l8 3v6c0 4.5-3.4 7.6-8 9-4.6-1.4-8-4.5-8-9V8z"/><path d="M10.5 14l2.5 2.5 4.5-5"/>'),
   calendar: svg('<rect x="6" y="8" width="16" height="14" rx="2"/><path d="M6 12.5h16M10.5 6v4M17.5 6v4"/>'),
   money: svg('<circle cx="14" cy="14" r="8.5"/><path d="M16.8 10.8c-.6-.9-1.6-1.3-2.8-1.3-1.6 0-2.8.9-2.8 2.1 0 2.9 5.8 1.5 5.8 4.6 0 1.3-1.3 2.2-3 2.2-1.3 0-2.4-.5-3-1.5M14 8v1.5M14 18.5V20"/>'),
   gear: svg('<path d="M5 14l4.5-7.8h9L23 14l-4.5 7.8h-9z"/><circle cx="14" cy="14" r="2.8"/>'),
@@ -77,6 +81,8 @@ export function rangeBounds(r, now = Date.now() / 1000) {
 
 const STRATS_OF = (pane) => (pane?.cfg.indicators || []).filter((ind) => BY_ID[ind.id]?.strategy);
 export const strategiesOn = STRATS_OF;
+// a saved script by the name it's saved under in My scripts (renamed, or a numbered copy)
+const nameOf = (def) => def?.saved || def?.name;
 
 // "1000" -> "1K", "2500000" -> "2.5M": the capital in the toolbar
 const compact = (v) => {
@@ -108,6 +114,7 @@ export class StrategyReport {
     this.chart = null;
     this.sig = "";
     this.deep = null; // { key, status, bars, result, error, first, lastTime }
+    this.checks = null; // { uid, key, keys, status, done, total, result, error, stop }
     this.cautionOff = false;
   }
 
@@ -207,8 +214,13 @@ export class StrategyReport {
     const s = this.source(pane, ind, host, onBuilder);
     const r = s.r,
       bars = s.bars || [];
+    // the checks run on a copy of the bars: a new bar or tick doesn't change what they show
+    if (this.view === "checks") {
+      const c = this.checks?.uid === ind.uid ? this.checks : null;
+      return [ind.uid, nameOf(BY_ID[ind.id]), this.view, document.documentElement.dataset.theme, s.deep ? 1 : 0, s.error || "", s.pending ? 1 : 0, r ? 1 : 0, this.checksKey(pane, ind), c?.status, c?.key].join("|");
+    }
     const t = r?.trades || [];
-    return [ind.uid, this.view, document.documentElement.dataset.theme, JSON.stringify(ind.range || {}), s.deep ? 1 : 0, s.error || "", s.pending ? 1 : 0, bars.length, bars[0]?.time, t.length, t.at(-1)?.exitTime, t.reduce((a, x) => a + x.pnl, 0).toFixed(6), (r?.open || []).map((o) => o.n).join(","), r?.initialCapital, r?.currency, r?.opts?.calc_on_every_tick ? 1 : 0].join("|");
+    return [ind.uid, nameOf(BY_ID[ind.id]), this.view, document.documentElement.dataset.theme, JSON.stringify(ind.range || {}), s.deep ? 1 : 0, s.error || "", s.pending ? 1 : 0, bars.length, bars[0]?.time, t.length, t.at(-1)?.exitTime, t.reduce((a, x) => a + x.pnl, 0).toFixed(6), (r?.open || []).map((o) => o.n).join(","), r?.initialCapital, r?.currency, r?.opts?.calc_on_every_tick ? 1 : 0].join("|");
   }
 
   render(host, pane, onBuilder) {
@@ -243,12 +255,14 @@ export class StrategyReport {
         ? `<div class="sr-empty">${s.loading ? "Loading bars for the testing period…" : s.pending ? "Calculating…" : "No results yet."}</div>`
         : this.view === "trades"
           ? this.tradesHtml(r, cur)
-          : this.metricsHtml(r, cur);
+          : this.view === "checks"
+            ? this.checksHtml(pane, ind, def)
+            : this.metricsHtml(r, cur);
     host.innerHTML = `<div class="sr">
       <div class="sr-bar">
-        <button class="sr-name" data-x="pick" title="Strategies on this chart">${ICON.strategy}<span>${esc(def?.name || "Strategy")}</span>${ICON.chevron}</button>
+        <button class="sr-name" data-x="pick" title="Strategies on this chart">${ICON.strategy}<span>${esc(nameOf(def) || "Strategy")}</span>${ICON.chevron}</button>
         <span class="sr-sep"></span>
-        <div class="sr-seg"><button data-v="metrics" class="${this.view === "metrics" ? "on" : ""}" title="Metrics">${ICON.metrics}</button><button data-v="trades" class="${this.view === "trades" ? "on" : ""}" title="List of trades">${ICON.trades}</button></div>
+        <div class="sr-seg"><button data-v="metrics" class="${this.view === "metrics" ? "on" : ""}" title="Metrics">${ICON.metrics}</button><button data-v="trades" class="${this.view === "trades" ? "on" : ""}" title="List of trades">${ICON.trades}</button><button data-v="checks" class="${this.view === "checks" ? "on" : ""}" title="Quant checks">${ICON.checks}</button></div>
         <button class="sr-chip" data-m="period" title="Testing period">${ICON.calendar}<span>${rangeLabel}</span>${s.deep ? '<em class="sr-deep">Deep</em>' : ""}${ICON.chevron}</button>
         ${r ? `<button class="sr-chip" data-m="capital" title="Initial capital">${ICON.money}<span>${compact(r.initialCapital)}<small>${esc(cur)}</small></span>${ICON.chevron}</button>` : ""}
         <button class="sr-chip" data-m="detail" title="Bar detalization">${ICON.detail}<span>Default detalization</span>${ICON.chevron}</button>
@@ -275,7 +289,7 @@ export class StrategyReport {
       };
     });
     if (r && this.view === "trades") {
-      host.querySelector('[data-x="csv"]').onclick = () => download(`${ticker(pane.cfg.symbol)}-${pane.cfg.tf}-${(def?.name || "strategy").replace(/[^\w.-]+/g, "_").slice(0, 40)}-trades.csv`, this.csv(r, cur));
+      host.querySelector('[data-x="csv"]').onclick = () => download(`${ticker(pane.cfg.symbol)}-${pane.cfg.tf}-${(nameOf(def) || "strategy").replace(/[^\w.-]+/g, "_").slice(0, 40)}-trades.csv`, this.csv(r, cur));
       host.querySelector('[data-x="cols"]').onclick = (e) => this.menu(e.currentTarget, "cols", host, pane, ind, onBuilder, r);
       const sort = host.querySelector('[data-x="sort"]');
       if (sort)
@@ -285,6 +299,11 @@ export class StrategyReport {
         };
     }
     if (r && this.view === "metrics") this.mountChart(host, pane, r, cur, def, s.bars, s.rb);
+    if (r && this.view === "checks") {
+      host.querySelector('[data-q="run"]').onclick = () => this.runChecks(host, pane, ind, onBuilder);
+      const stop = host.querySelector('[data-q="stop"]');
+      if (stop) stop.onclick = () => this.checks && (this.checks.stop = true);
+    }
     bodyEl.scrollTop = keepScroll;
     this.sig = this.signature(pane, ind, host, onBuilder);
     return true;
@@ -444,22 +463,100 @@ export class StrategyReport {
     if (tb.pop?.dataset.for === "sr-pick") return tb.closePopover();
     tb.closePopover();
     const list = STRATS_OF(pane);
-    const html = `${list.map((x) => `<button data-u="${esc(x.uid)}" class="${x.uid === this.uid ? "on" : ""}"><span>${esc(BY_ID[x.id]?.name || x.id)}</span></button>`).join("")}<hr><button data-u=""><span>Strategy builder (no code)</span></button>`;
+    // the strategies on the chart, then the two ways to build one: described to the AI, or rule by rule
+    const html = `<div class="sr-ml">${list.map((x) => `<button data-u="${esc(x.uid)}" class="${x.uid === this.uid ? "on" : ""}"><span>${esc(nameOf(BY_ID[x.id]) || x.id)}</span></button>`).join("")}<hr><button data-b="ai"><span>Build a strategy for me</span></button><button data-b="rules"><span>Pick the rules myself</span></button></div>`;
     const pop = tb.openPopover(btn, html, "sr-pick");
-    pop.classList.add("sr-pop");
+    pop.classList.add("sr-menu", "sr-pop");
     const r = btn.getBoundingClientRect();
     pop.style.left = `${Math.max(4, r.left)}px`;
     pop.onclick = (e) => {
-      const b = e.target.closest("[data-u]");
+      const b = e.target.closest("[data-u], [data-b]");
       if (!b) return;
       tb.closePopover();
-      if (!b.dataset.u) return onBuilder?.();
+      if (b.dataset.b) return onBuilder?.(b.dataset.b);
       this.uid = b.dataset.u;
       this.render(host, pane, onBuilder);
     };
   }
 
   // ---- Metrics: Key stats and the Performance chart
+  // ---- Quant checks: what they ran on, so a change of settings, symbol, interval or period shows
+  checksKey(pane, ind) {
+    return [ind.id, pane.cfg.symbol, pane.cfg.tf, JSON.stringify(ind.params || {}), JSON.stringify(ind.props || {}), JSON.stringify(ind.range || {})].join("|");
+  }
+
+  checksHtml(pane, ind, def) {
+    const nums = numberInputs(def?.inputs).filter((x) => Number(ind.params?.[x.key] ?? x.default) > 0);
+    const c = this.checks?.uid === ind.uid ? this.checks : null;
+    const keys = c ? c.keys : nums.slice(0, 2).map((x) => x.key);
+    const options = (sel) => `<option value="">Nothing</option>${nums.map((x) => `<option value="${esc(x.key)}"${x.key === sel ? " selected" : ""}>${esc(x.label)}</option>`).join("")}`;
+    const running = c?.status === "running";
+    let out = "";
+    if (running) out = `<p class="hint-text" data-q="msg">${c.total ? `Checking ${c.done} of ${c.total}…` : "Checking…"}</p>`;
+    else if (c?.status === "done") {
+      const q = c.result,
+        n = q.base.trades;
+      out =
+        (c.key !== this.checksKey(pane, ind) ? `<p class="sr-qnote">The settings, symbol, interval or testing period changed since these checks ran. Run them again to check what's on the chart now.</p>` : "") +
+        `<p class="hint-text">Checked on ${q.bars.toLocaleString("en-US")} bars, ${dateText(q.from)} to ${dateText(q.to)}.${q.failed ? ` ${q.failed} version${q.failed === 1 ? "" : "s"} stopped with an error and ${q.failed === 1 ? "was" : "were"} left out.` : ""}</p>` +
+        (q.thin ? `<p class="sr-qnote">Only ${n} closed trade${n === 1 ? "" : "s"}. Under 30, a backtest says little whatever these checks say. A longer testing period, or a shorter interval, gives more.</p>` : "") +
+        (q.sizePct != null && q.sizePct < 1 ? `<p class="sr-qnote">A trade here puts about ${+q.sizePct.toPrecision(2)}% of the starting capital to work, so the returns are tiny. The checks still compare the versions fairly. For returns that mean something, open Settings (the gear on this bar), Properties, and set Default order size to 100 % of equity.</p>` : "") +
+        quantHtml(q);
+    } else if (c?.status === "error") out = `<p class="down">${esc(c.error)}</p>`;
+    else if (c?.status === "stopped") out = `<p class="hint-text">${c.timedOut ? "Stopped after two minutes: this script is slow to run 25 times. A shorter testing period checks faster." : "Stopped."}</p>`;
+    return `<div class="gold-box sr-quant">
+      <div class="gold-head"><span class="gold-badge">Bonus</span><b>Quant checks</b></div>
+      <p class="hint-text">The checks quant desks run before they trust a backtest: walk-forward, overfitting (PBO), deflated Sharpe, cost stress, nearby settings, 3 months at a time, and a Monte Carlo of the trades. They run this script on its testing period about 25 times with nearby values of the settings picked here, and once with double the commission and more slippage. The chart and its strategy stay as they are.</p>
+      ${nums.length ? `<div class="row-flex sr-qpick"><label>Vary <select class="in" data-q="k0"${running ? " disabled" : ""}>${options(keys[0])}</select></label><label>and <select class="in" data-q="k1"${running ? " disabled" : ""}>${options(keys[1])}</select></label></div>` : '<p class="hint-text">This script has no number settings to vary, so only the cost stress and the Monte Carlo can run.</p>'}
+      <div class="row-flex"><button class="btn gold" data-q="run"${running ? " disabled" : ""}>${c?.status === "done" ? "Run again" : "Run quant checks"}</button>${running ? '<button class="btn" data-q="stop">Stop</button>' : ""}</div>
+      <div data-q="out">${out}</div>
+    </div>`;
+  }
+
+  // On a copy of the report's bars (without one still forming) and its testing period, one version
+  // at a time, so the page keeps working; the chart's own strategy isn't touched.
+  async runChecks(host, pane, ind, onBuilder) {
+    const def = BY_ID[ind.id];
+    const s = this.source(pane, ind, host, onBuilder);
+    if (!def || !s.r || !s.bars?.length) return;
+    let bars = s.bars;
+    if (!pane.replay && bars.at(-1).time + parseTf(pane.cfg.tf).seconds > Date.now() / 1000) bars = bars.slice(0, -1);
+    const rb = s.rb;
+    const range = s.deep ? { from: rb.all ? -Infinity : rb.from, to: rb.to ?? Infinity } : rb && !rb.all && rb.from >= bars[0].time ? { from: rb.from, to: rb.to ?? Infinity } : null;
+    const ctx = { ...ctxFor(pane, ind, bars, range), forming: false };
+    const picked = [...host.querySelectorAll(".sr-qpick select")].map((x) => x.value);
+    const c = (this.checks = { uid: ind.uid, key: this.checksKey(pane, ind), keys: picked, status: "running", done: 0, total: 0, stop: false, deadline: Date.now() + 120000 });
+    this.render(host, pane, onBuilder);
+    try {
+      c.result = await pineChecks({
+        inputs: def.inputs,
+        params: ind.params || {},
+        bars,
+        keys: picked.length ? [...new Set(picked.filter(Boolean))] : null,
+        run: (params, props) => {
+          const out = def.calc(bars, { ...params, __ctx: props ? { ...ctx, strategy: { ...(ctx.strategy || {}), ...props } } : ctx });
+          if (!out.strategy) throw new Error("The script gave no strategy result");
+          return out.strategy;
+        },
+        progress: (done, total) => {
+          c.done = done;
+          c.total = total;
+          const m = host.querySelector('[data-q="msg"]');
+          if (m && this.checks === c) m.textContent = `Checking ${done} of ${total}…`;
+        },
+        stopped: () => {
+          if (Date.now() > c.deadline) c.timedOut = true;
+          return c.stop || c.timedOut || this.checks !== c;
+        },
+      });
+      c.status = "done";
+    } catch (e) {
+      c.status = e.stopped ? "stopped" : "error";
+      c.error = e.message || String(e);
+    }
+    if (this.checks === c && host.isConnected && this.view === "checks" && this.uid === ind.uid && this.app.active === pane) this.render(host, pane, onBuilder);
+  }
+
   metricsHtml(r, cur) {
     const t = r.trades;
     const net = t.reduce((a, x) => a + x.pnl, 0);
@@ -497,7 +594,7 @@ export class StrategyReport {
     const el = host.querySelector(".sr-chart:not(.sr-none)");
     host.querySelector('[data-x="shot"]').onclick = () => {
       if (!this.chart) return;
-      this.chart.takeScreenshot().toBlob((b) => b && download(`${(def?.name || "strategy").replace(/[^\w.-]+/g, "_").slice(0, 40)}-performance.png`, b, "image/png"));
+      this.chart.takeScreenshot().toBlob((b) => b && download(`${(nameOf(def) || "strategy").replace(/[^\w.-]+/g, "_").slice(0, 40)}-performance.png`, b, "image/png"));
     };
     if (!el || !this.perfOpen) return;
     const cs = getComputedStyle(host.querySelector(".sr"));

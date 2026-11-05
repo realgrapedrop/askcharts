@@ -10,6 +10,7 @@ import { THEME_KEYS } from "./chartsettings.js";
 import { parseTf } from "../lib/series.js";
 import { AGENT_TOOL_BY_NAME, DRAWABLE, sameIndicator } from "../lib/agent-tools.js";
 import { iso, round, parseWhen, barIndexAt, summary, levels } from "../lib/agent-analysis.js";
+import { compilePine } from "../lib/pine.js";
 
 export const MAX_CALLS = 20; // tool calls in one answer
 const MAX_ROUNDS = 12;
@@ -176,6 +177,7 @@ export class AgentTools {
       favs: [...indicatorFavs(a)],
       watchlists: structuredClone(a.state.watchlists || {}),
       activeWatchlist: a.state.activeWatchlist,
+      pineScripts: structuredClone(a.state.pineScripts || {}),
       theme: a.settings.theme,
       replay: a.panes.map((p) => !!p.replay),
     };
@@ -205,6 +207,11 @@ export class AgentTools {
     a.settings.indicatorFavs = [...s.favs];
     a.state.watchlists = structuredClone(s.watchlists);
     a.state.activeWatchlist = s.activeWatchlist;
+    // a script the AI saved since goes from My scripts and the indicator list
+    if (s.pineScripts) {
+      for (const id of Object.keys(a.state.pineScripts || {})) if (!s.pineScripts[id]) a.pineEditor?.forget(id);
+      a.state.pineScripts = structuredClone(s.pineScripts);
+    }
     await Promise.all(loads);
     a.syncToolbar();
     a.persist();
@@ -230,7 +237,7 @@ export class AgentTools {
   }
 
   // Run one tool call: { result, label, snap?, error?, declined? }.
-  async run(call, { confirm, askFirst } = {}) {
+  async run(call, { confirm, askFirst, choose, offer } = {}) {
     const def = AGENT_TOOL_BY_NAME[call.name];
     if (!def || typeof this[call.name] !== "function") return { error: `There's no tool called ${call.name}.`, label: `Unknown tool ${call.name}` };
     const input = call.input && typeof call.input === "object" && !Array.isArray(call.input) ? call.input : {};
@@ -238,7 +245,7 @@ export class AgentTools {
     if (q && confirm && !(await confirm(q))) return { result: "The person said no, so nothing changed. Don't try again unless they ask.", declined: true, label: `Not done: ${q.replace(/\?$/, "")}` };
     const snap = def.read || def.view ? null : this.snapshot();
     try {
-      const r = await this[call.name](input);
+      const r = await this[call.name](input, { choose, offer });
       // nothing changed (it was already there): shown as a look, with nothing to undo
       if (r.unchanged) return { ...r, snap: null, read: true, view: !!def.view };
       return { ...r, snap, read: !!def.read, view: !!def.view };
@@ -282,7 +289,7 @@ export class AgentTools {
         return {
           uid: ind.uid,
           id: ind.id,
-          name: BY_ID[ind.id]?.name || ind.id,
+          name: BY_ID[ind.id]?.saved || BY_ID[ind.id]?.name || ind.id,
           inputs: ind.params || {},
           latest: this.latest(p, ind),
           ...(ind.hidden ? { hidden: true } : {}),
@@ -700,13 +707,227 @@ export class AgentTools {
     if (!parts.length) fail("Nothing to change: give add, remove or create.");
     return { label: `Watchlist ${name}: ${parts.join("; ")}`, result: { list: name, symbols: list } };
   }
+
+  // ---------- questions ----------
+  // The person clicks an answer in the panel; Stop, or no panel to ask in, is no answer.
+  async ask_person(input, { choose } = {}) {
+    const q = String(input.question || "").trim().slice(0, 300);
+    const choices = (Array.isArray(input.choices) ? input.choices : []).map((c) => String(c).trim().slice(0, 80)).filter(Boolean);
+    if (!q || choices.length < 2 || choices.length > 5) fail("Ask one question with 2 to 5 short answers.");
+    if (!choose) fail("There's no panel to ask in here: ask in your text instead.");
+    const answer = await choose(q, choices);
+    if (answer == null) return { label: `Asked: ${q}`, result: "The person didn't answer. Stop here and wait for them." };
+    return { label: `Asked: ${q} (${answer})`, result: { answer } };
+  }
+  // Buttons under the answer; a click sends one as the person's next message.
+  async next_steps(input, { offer } = {}) {
+    const steps = [...new Set((Array.isArray(input.steps) ? input.steps : []).map((s) => String(s).trim().slice(0, 80)).filter(Boolean))];
+    if (!steps.length || steps.length > 3) fail("Give 1 to 3 short next steps.");
+    if (!offer) fail("There's no panel to show buttons in here: offer them in your text instead.");
+    offer(steps);
+    return { label: "Offered next steps", result: "Shown as buttons under your answer." };
+  }
+
+  // ---------- Pine strategies: written by the AI, run and tested on the server (lib/pinerun.js) ----------
+  // the symbol and interval to run on: the ones given, else the active chart's
+  async target(input) {
+    const p = this.app.active;
+    const symbol = input.symbol ? await this.symbol(input.symbol) : p.cfg.symbol;
+    return { symbol, tf: this.interval(input.interval || p.cfg.tf) };
+  }
+  interval(tf) {
+    try {
+      parseTf(String(tf));
+    } catch {
+      fail(`"${tf}" isn't an interval: use one like 1h, 4h or 1D.`);
+    }
+    return String(tf);
+  }
+  async research(path, body) {
+    try {
+      return await api.post(path, body);
+    } catch (e) {
+      fail(e.status === 503 ? "Two strategy tests are already running. Wait a moment and try once more." : e.message || String(e));
+    }
+  }
+  // what the research covered, read first: a long answer is cut short in later turns
+  // the first and last bar: a date, with the time (UTC) on an intraday chart, so script_save can start the
+  // report on the same bar; then how far back that is against the years asked (w: the server's years, short)
+  span(b, source, w) {
+    if (!b) return null;
+    const [from, to] = [iso(b.from), iso(b.to)].map((s) => s?.replace(/ 00:00$/, ""));
+    const reach = !w?.years
+      ? ""
+      : w.short === "bars"
+        ? `, under the ${w.years} years asked: 19,500 bars is the most`
+        : w.short === "history"
+          ? `, all the history there is: under the ${w.years} years asked`
+          : `, the last ${w.years} year${w.years === 1 ? "" : "s"}`;
+    return `${b.count} bars from ${from} to ${to}${/:/.test(from + to) ? " UTC" : ""}${source ? ` (${source})` : ""}${reach}`;
+  }
+  // how long a typical trade lasted, from its median hours
+  hold(h) {
+    if (h == null) return null;
+    return h < 1 ? `${Math.max(1, Math.round(h * 60))} minutes` : h < 48 ? `${+h.toFixed(1)} hours` : `${+(h / 24).toFixed(1)} days`;
+  }
+  // one stretch, short: return and buy and hold in %, trades, win rate, typical hold, worst drop, Sharpe
+  stretch(x) {
+    return x ? { from: iso(x.from), to: iso(x.to), returnPct: x.returnPct, buyHoldPct: x.buyHoldPct, trades: x.trades, winRatePct: x.winRatePct, typicalHold: this.hold(x.holdHours), worstDropPct: x.maxDrawdownPct, sharpe: x.sharpe } : null;
+  }
+  // the years asked, the same on every research tool (the server's 2 when left out)
+  years(input) {
+    const y = Number(input.years);
+    return y > 0 ? y : undefined;
+  }
+  pct(v) {
+    return v == null ? "n/a" : `${v >= 0 ? "+" : ""}${v}%`;
+  }
+
+  async market_character(input) {
+    const { symbol, tf } = await this.target(input);
+    const r = await this.research("/api/market/profile", { symbol, tf, years: this.years(input) });
+    if (!r.ok) fail(r.error?.message || "No profile came back.");
+    const { ok, bars, source, symbol: s, tf: _t, years, short, ...rest } = r;
+    return { label: `Profiled ${this.name(symbol)} ${tf}: ${r.character}`, result: { symbol, interval: tf, bars: this.span(bars, source, r), ...rest } };
+  }
+
+  async script_check(input) {
+    const { symbol, tf } = await this.target(input);
+    const r = await this.research("/api/pine/check", { code: String(input.code || ""), symbol, tf, params: input.inputs || {}, years: this.years(input) });
+    if (!r.ok) {
+      const at = r.error?.line ? `line ${r.error.line}: ` : "";
+      return { label: `Checked the script: ${at}${r.error?.message}`, result: { ok: false, error: r.error, note: "Fix it and check again. After two tries on the same error, explain the problem instead." } };
+    }
+    const s = r.strategy;
+    const head = { ok: true, kind: r.kind, title: r.title, symbol, interval: tf, bars: this.span(r.bars, r.source, r) };
+    if (!s) return { label: `Checked ${r.title} on ${this.name(symbol)} ${tf}`, result: { ...head, plots: r.plots, markers: r.markers, inputs: r.inputs, warnings: r.warnings } };
+    return {
+      label: `Checked ${r.title} on ${this.name(symbol)} ${tf}: ${s.closedTrades} trades, ${this.pct(s.whole?.returnPct)} against ${this.pct(s.whole?.buyHoldPct)} buy and hold`,
+      result: {
+        ...head,
+        closedTrades: s.closedTrades,
+        whole: this.stretch(s.whole),
+        first70: this.stretch(s.train),
+        last30: this.stretch(s.test),
+        fees: s.fees,
+        sizePct: s.sizePct,
+        ...(s.tinyOrder ? { tinyOrder: true, note: "Each trade uses under 1% of the account, so returns are tiny: add default_qty_type=strategy.percent_of_equity, default_qty_value=100 to strategy()." } : {}),
+        ...(s.thin ? { thin: true } : {}),
+        inputs: r.inputs,
+        warnings: r.warnings,
+      },
+    };
+  }
+
+  async strategy_sweep(input) {
+    const { symbol, tf } = await this.target(input);
+    const r = await this.research("/api/pine/sweep", { code: String(input.code || ""), symbol, tf, params: input.inputs || {}, sweep: input.sweep || {}, years: this.years(input) });
+    if (!r.ok) fail(`${r.error?.line ? `line ${r.error.line}: ` : ""}${r.error?.message || "The sweep didn't run."}`);
+    const pick = r.picked;
+    const set = (v) => Object.entries(v || {}).map(([k, x]) => `${k} ${x}`).join(", ");
+    return {
+      label: `Tried ${r.tried} versions of ${r.title} on ${this.name(symbol)} ${tf}${pick ? `: picked ${set(pick.values)}, ${r.checks?.passed} of ${r.checks?.of} checks passed` : ": none picked"}`,
+      result: {
+        title: r.title,
+        symbol,
+        interval: tf,
+        bars: this.span(r.bars, r.source, r),
+        versionsTried: r.tried,
+        picked: pick ? { settings: pick.values, inputs: pick.inputs, first70: this.stretch(pick.train), last30: this.stretch(pick.test) } : null,
+        checks: r.checks ? { ...r.checks, ...(r.checks.quarters ? { quarters: r.checks.quarters.map((q) => ({ ...q, from: iso(q.from)?.slice(0, 10), to: iso(q.to)?.slice(0, 10) })) } : {}) } : null,
+        ...(r.note ? { note: r.note } : {}),
+        ...(r.failed ? { failed: r.failed } : {}),
+        bestOnFirst70: (r.best || []).map((x) => ({ settings: x.values, returnPct: x.train?.returnPct, trades: x.train?.trades, sharpe: x.train?.sharpe })),
+      },
+    };
+  }
+
+  async strategy_scan(input) {
+    const p = this.app.active;
+    const symbol = input.symbol ? await this.symbol(input.symbol) : p.cfg.symbol;
+    const tfs = (Array.isArray(input.intervals) && input.intervals.length ? input.intervals : ["1h", "4h", "1D"]).slice(0, 3).map((t) => this.interval(t));
+    const r = await this.research("/api/pine/scan", { symbol, tfs, shorts: input.shorts === true, years: this.years(input) });
+    if (!r.ok) fail(r.error?.message || "The scan didn't run.");
+    return {
+      label: `Tested 8 kinds of strategy on ${this.name(symbol)} ${tfs.join(", ")}${r.shorts ? ", long and short" : ""}: ${r.trials} versions`,
+      result: {
+        symbol,
+        intervals: r.intervals.map((x) => ({ interval: x.tf, bars: this.span(x.bars, r.source, { years: r.years, short: x.short }), buyHoldFirst70Pct: x.buyHold?.train, buyHoldLast30Pct: x.buyHold?.test })),
+        versionsTried: r.trials,
+        feePct: r.fee,
+        ...(r.shorts ? { shorts: "The trend kinds (Moving average cross, MACD cross, Supertrend) went long and short. The other five only buy: they have no short side." } : {}),
+        note: "Ranked on the last 30%: a kind picked from this ranking was chosen on those bars, so its last-30% figure is optimistic. Add these versions to any sweep's when you say how many were tried, and let the quant checks decide.",
+        ranked: r.results.map((x) => ({ kind: x.name, template: x.template, interval: x.tf, ...(r.shorts ? { sides: x.shorts ? "long and short" : "long only" } : {}), settings: x.picked, first70: this.stretch(x.train), last30: this.stretch(x.test) })),
+      },
+    };
+  }
+
+  async script_save(input) {
+    const a = this.app,
+      p = a.active;
+    const code = String(input.code || "");
+    if (!code.trim()) fail("Give the script's code.");
+    // the report runs on the chart's symbol and interval: they must be the ones the script was checked on
+    if (input.symbol) {
+      const sym = await this.symbol(input.symbol);
+      if (sym !== p.cfg.symbol) fail(`The active chart shows ${this.name(p.cfg.symbol)}, not ${this.name(sym)}. Put ${sym} on it with chart_set first, so the report runs on the bars you checked.`);
+    }
+    if (input.interval && this.interval(input.interval) !== p.cfg.tf) fail(`The active chart is on ${p.cfg.tf}, not ${input.interval}. Change it with chart_set first.`);
+    let compiled;
+    try {
+      compiled = compilePine(code);
+    } catch (e) {
+      fail(`It doesn't compile (${e.message}). Fix it with script_check first.`);
+    }
+    const name = String(input.name || compiled.meta.title || "My script").trim().slice(0, 60);
+    const scripts = (a.state.pineScripts ||= {});
+    // the same name and code is that saved script, not a copy; a name in use gets the next number
+    let id = Object.entries(scripts).find(([, s]) => s.name === name && s.code === code)?.[0];
+    const reused = !!id;
+    if (!id) {
+      let free = name;
+      for (let k = 2; Object.values(scripts).some((s) => s.name === free); k++) free = `${name} ${k}`;
+      id = `s${Date.now().toString(36)}`;
+      scripts[id] = { name: free, code, saved: Date.now() };
+    }
+    const saved = scripts[id].name;
+    const { def } = a.pineEditor.register(id, code);
+    const favs = indicatorFavs(a);
+    if (!favs.includes(def.id)) favs.push(def.id);
+    let uid = null;
+    const from = input.testing_from ? parseWhen(input.testing_from) : null;
+    if (input.testing_from && !Number.isFinite(from)) fail("testing_from is a date like 2023-11-02.");
+    if (input.add_to_chart !== false) {
+      uid = p.cfg.indicators.find((x) => x.id === def.id)?.uid || p.addIndicator(def.id);
+      const ind = p.cfg.indicators.find((x) => x.uid === uid);
+      if (def.strategy && Number.isFinite(from)) ind.range = { kind: "custom", from, to: null };
+      p.render(false);
+      if (def.strategy) a.panels?.showStrategyReport?.(p, uid);
+    }
+    a.persist();
+    const where = uid ? ` and added it to ${this.which(p)}` : "";
+    return {
+      label: `${reused ? "Used" : "Saved"} ${saved} in My scripts${where}`,
+      script: { id, name: saved, code, symbol: p.cfg.symbol, tf: p.cfg.tf, strategy: !!def.strategy, uid },
+      result: {
+        id,
+        name: saved,
+        indicatorId: def.id,
+        ...(uid ? { uid, chart: this.chartNo(p) } : {}),
+        ...(reused ? { reused: true } : {}),
+        ...(def.strategy && uid
+          ? { report: `The Strategy tester shows its report${Number.isFinite(from) ? ` from ${iso(from).slice(0, 10)}` : " on the chart's bars"}: one figure for the whole period, where your research also split it 70/30. Say so.` }
+          : {}),
+      },
+    };
+  }
 }
 
 // ---------- the conversation ----------
 // One answer: ask the model (the server adds the guide and holds the key), do the tools it calls, send
 // back what happened, until it answers or the limits are reached. `history` is the earlier turns in the
 // shared form ({role: user|assistant|tool}); returns this answer's exchanges in the same form.
-export async function converse({ tools, history, context, signal, onText, onStep, confirm, askFirst }) {
+export async function converse({ tools, history, context, signal, onText, onStep, confirm, askFirst, choose, offer }) {
   const exchanges = [];
   let calls = 0,
     usage = { input: 0, output: 0, cached: 0 },
@@ -727,7 +948,7 @@ export async function converse({ tools, history, context, signal, onText, onStep
         results.push({ id: call.id, content: `Stopped: at most ${MAX_CALLS} actions in one answer. Tell the person what's left to do.`, error: true });
         continue;
       }
-      const done = await tools.run(call, { confirm, askFirst });
+      const done = await tools.run(call, { confirm, askFirst, choose, offer });
       onStep?.(call, done);
       const r = done.result;
       if (done.error) results.push({ id: call.id, content: done.error, error: true });
@@ -736,6 +957,8 @@ export async function converse({ tools, history, context, signal, onText, onStep
     }
     exchanges.push({ role: "tool", results });
     if (signal?.aborted) break;
+    // only tools that end the answer (next_steps), and they worked: no round just to hear it's done
+    if (step.calls.every((c) => AGENT_TOOL_BY_NAME[c.name]?.ends) && results.every((r) => !r.error)) break;
   }
   return { exchanges, usage, stop };
 }

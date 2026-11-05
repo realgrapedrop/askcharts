@@ -32,6 +32,9 @@ const SUGGEST = [
   "Compare BTC and ETH on the daily",
   "Explain the indicators on my chart",
   "How do I set an alert when the price crosses a level?",
+  "Find a strategy for XRP that held up on bars it never saw",
+  "Which indicators work best on BTC on the 4 hour?",
+  "Build me an RSI strategy and backtest it",
 ];
 
 // ---------- a small, safe markdown subset: everything is escaped first ----------
@@ -48,6 +51,20 @@ function inline(s) {
     )
     .join("");
 }
+// a table: a row of cells (| a | b |), a row of dashes under it (|---|--:|, a colon on the right sets
+// the column right, on both sides centred), then its rows. Rows without the dashes stay text.
+const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+const isRow = (line) => /^\s*\|.*\|\s*$/.test(line || "");
+const isRule = (line) => isRow(line) && cells(line).every((c) => /^:?-+:?$/.test(c));
+function table(rows) {
+  const head = cells(rows[0]),
+    align = cells(rows[1]).map((c) => (c.endsWith(":") ? (c.startsWith(":") ? ' class="c"' : ' class="r"') : ""));
+  const row = (tag, cs) => `<tr>${head.map((_, k) => `<${tag}${align[k] || ""}>${inline(cs[k] ?? "")}</${tag}>`).join("")}</tr>`;
+  return `<div class="cp-table"><table><thead>${row("th", head)}</thead><tbody>${rows
+    .slice(2)
+    .map((r) => row("td", cells(r)))
+    .join("")}</tbody></table></div>`;
+}
 export function md(src) {
   const lines = esc(src).split("\n");
   let out = "",
@@ -62,7 +79,8 @@ export function md(src) {
     if (list) out += `<${list.tag}>${list.items.map((x) => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`;
     list = null;
   };
-  for (const line of lines) {
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k];
     if (code) {
       if (/^\s*```/.test(line)) {
         out += `<div class="cp-code"><button class="cp-copy" data-copy title="Copy">Copy</button><pre><code>${code.join("\n")}</code></pre></div>`;
@@ -74,6 +92,15 @@ export function md(src) {
       endPara();
       endList();
       code = [];
+      continue;
+    }
+    if (isRow(line) && isRule(lines[k + 1])) {
+      endPara();
+      endList();
+      let end = k + 2;
+      while (end < lines.length && isRow(lines[end])) end++;
+      out += table(lines.slice(k, end));
+      k = end - 1;
       continue;
     }
     const h = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line);
@@ -120,6 +147,9 @@ export class Copilot {
     this.undos = new WeakMap();
     this.after = new WeakMap();
     this.asking = null;
+    // words put in the box from elsewhere (compose), kept until a panel can take them, and the cursor with them
+    this.boxText = null;
+    this.take = null;
     try {
       this.messages = JSON.parse(localStorage.getItem(STORE) || "[]").filter((m) => m && typeof m.content === "string");
     } catch {
@@ -204,6 +234,18 @@ export class Copilot {
     this.refreshConfig();
     loadAgent().catch(() => {}); // ready before the first question
   }
+  // Words from elsewhere in the app (Write with AI…, the Strategy tester's box): the panel opens and they go in
+  // its box, or are sent with `send` when it can answer now. Busy, or no model yet, they wait in the box.
+  async compose(text, { send = false } = {}) {
+    this.app.panels.showSide("copilot");
+    // on a fresh page the panel doesn't know yet whether a model is set up
+    if (!this.cfg) await this.refreshConfig();
+    // the cursor follows the words into the panel
+    this.take = true;
+    if (send && this.cfg?.hasKey && this.cfg?.model && !this.busy) return this.ask(text);
+    this.boxText = text;
+    this.render();
+  }
 
   render() {
     const el = this.el;
@@ -217,6 +259,12 @@ export class Copilot {
         : this.messages.length
           ? this.messages.map((m, i) => this.bubble(m, i)).join("")
           : `<div class="cp-empty">${ROBOT}<div class="cp-hello">How can I help?</div><p>Ask about the chart, or tell me what to put on it. Every change can be undone.</p><div class="cp-sugg">${SUGGEST.map((s) => `<button data-ask="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
+    // what's in the box lives through a redraw (the config coming back, an answer ending) until it's sent
+    const typed = this.boxText ?? $("textarea", el)?.value ?? "";
+    // and the redraw leaves the cursor where you're typing outside the panel (the Pine Editor, the Strategy
+    // tester's box), unless the words just came from there
+    const at = document.activeElement,
+      elsewhere = !!at && !el.contains(at) && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName));
     el.innerHTML = `<div class="sp-fill cp">
       <div class="sp-head"><span class="cp-mark">${ROBOT}</span><span class="sp-name">AskCharts AI</span><span class="spacer"></span><button class="sp-icon" data-x="new" title="New chat">${I.newChat}</button><button class="sp-icon" data-x="settings" title="AskCharts AI settings">${I.gear}</button></div>
       <div class="sp-scroll cp-log">${body}</div>
@@ -228,11 +276,13 @@ export class Copilot {
       ta = $("textarea", el);
     log.scrollTop = log.scrollHeight;
     el.onclick = (e) => {
-      const b = e.target.closest("[data-x],[data-ask],[data-copy],[data-retry],[data-undo],[data-answer]");
+      const b = e.target.closest("[data-x],[data-ask],[data-copy],[data-retry],[data-undo],[data-answer],[data-choice],[data-script]");
       if (!b) return;
       if (b.dataset.ask) return this.ask(b.dataset.ask);
       if (b.dataset.undo) return this.undo(b.dataset.undo);
       if (b.dataset.answer) return this.answer(b.dataset.answer === "yes");
+      if (b.dataset.choice) return this.answer(this.asking?.part.choices?.[Number(b.dataset.choice)] ?? null);
+      if (b.dataset.script) return this.scriptAction(b.dataset.script, b.dataset.act);
       if (b.hasAttribute("data-copy")) {
         const t = b.parentElement.querySelector("code")?.textContent || "";
         navigator.clipboard?.writeText(t).then(() => this.app.toast("Copied."), () => this.app.toast("Couldn't copy.", "err"));
@@ -263,7 +313,13 @@ export class Copilot {
         if (!this.busy) this.ask(ta.value);
       }
     };
-    if (ready) ta.focus();
+    if (ready && (this.take || !elsewhere)) ta.focus();
+    if (ready && typed) {
+      ta.value = typed;
+      grow();
+      ta.setSelectionRange(typed.length, typed.length);
+    }
+    if (ready) this.boxText = this.take = null;
   }
 
   bubble(m, i) {
@@ -284,7 +340,15 @@ export class Copilot {
     for (const part of m.parts) {
       if (part.t === "text") html += `<div class="cp-md">${md(part.v)}</div>`;
       else if (part.t === "look") html += `<div class="cp-look">${I.look}<span>${esc(part.label)}</span></div>`;
-      else if (part.t === "ask") {
+      else if (part.t === "ask" && part.choices) {
+        // a question with answers to click (ask_person)
+        const open = part.answer === undefined && this.asking?.part === part;
+        html += `<div class="cp-ask cp-choice"><span>${esc(part.q)}</span>${open ? `<span class="cp-ask-btns">${part.choices.map((c, k) => `<button class="btn" data-choice="${k}">${esc(c)}</button>`).join("")}</span>` : `<span class="cp-meta">${part.answer == null ? "No answer" : esc(part.answer)}</span>`}</div>`;
+      } else if (part.t === "script") {
+        // a script the AI saved: open it, see its report, or read its code here
+        const ref = `${i}:${m.parts.indexOf(part)}`;
+        html += `<div class="cp-card"><div class="cp-card-h"><b>${esc(part.name)}</b><span class="cp-meta">${esc(part.symbol)} · ${esc(part.tf)} · in My scripts</span></div><div class="cp-card-b"><button class="btn" data-script="${ref}" data-act="open">Open in Pine Editor</button>${part.strategy && part.uid ? `<button class="btn" data-script="${ref}" data-act="report">Strategy tester</button>` : ""}<button class="btn" data-script="${ref}" data-act="code">${part.showCode ? "Hide the code" : "Show the code"}</button></div>${part.showCode ? `<div class="cp-code"><button class="cp-copy" data-copy title="Copy">Copy</button><pre><code>${esc(part.code)}</code></pre></div>` : ""}</div>`;
+      } else if (part.t === "ask") {
         const open = part.answer == null && this.asking?.part === part;
         html += `<div class="cp-ask"><span>${esc(part.q)}</span>${open ? '<span class="cp-ask-btns"><button class="btn" data-answer="yes">Yes</button><button class="btn" data-answer="no">No</button></span>' : `<span class="cp-meta">${part.answer ? "Yes" : "No"}</span>`}</div>`;
       } else if (part.t === "step") {
@@ -298,7 +362,10 @@ export class Copilot {
     const all = !m.pending && undoable > 1 ? `<button class="cp-undo cp-undo-all" data-undo="${i}:0">Undo all</button>` : "";
     const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
     const used = m.usage && !m.pending && m.usage.input + m.usage.cached + m.usage.output > 0 ? `<div class="cp-meta cp-used">${k(m.usage.input + m.usage.cached + m.usage.output)} tokens${m.usage.cached ? ` (${k(m.usage.cached)} from cache)` : ""}</div>` : "";
-    return `<div class="cp-msg cp-ai" data-i="${i}">${html}${typing}${all}${tail}${used}</div>`;
+    // the next steps it offered (next_steps), as boxes to click under the last answer only
+    const steps = !m.pending && !m.error && !m.stopped && i === this.messages.length - 1 && m.parts.filter((x) => x.t === "next").at(-1)?.steps;
+    const next = steps ? `<div class="cp-sugg cp-next">${steps.map((s) => `<button data-ask="${esc(s)}">${esc(s)}</button>`).join("")}</div>` : "";
+    return `<div class="cp-msg cp-ai" data-i="${i}">${html}${typing}${all}${tail}${next}${used}</div>`;
   }
   paintLast() {
     const log = this.el?.isConnected && $(".cp-log", this.el);
@@ -316,14 +383,38 @@ export class Copilot {
     if (this.ctrl) this.ctrl.abort();
     this.answer(false);
   }
-  // Yes or No to the question the AI asked before a big change.
+  // Yes or No to the question the AI asked before a big change, or the answer picked from its choices
+  // (Stop or a new chat is no answer).
   answer(yes) {
     const q = this.asking;
     if (!q) return;
     this.asking = null;
-    q.part.answer = yes;
-    q.resolve(yes);
+    const v = q.part.choices ? (typeof yes === "string" ? yes : null) : yes;
+    q.part.answer = v;
+    q.resolve(v);
     this.render();
+  }
+  // The buttons on a saved script's card ("i:k": message i, part k).
+  scriptAction(ref, act) {
+    const [i, k] = ref.split(":").map(Number);
+    const part = this.messages[i]?.parts?.[k];
+    if (!part) return;
+    const a = this.app;
+    if (act === "code") {
+      part.showCode = !part.showCode;
+      return this.render();
+    }
+    if (!a.state.pineScripts?.[part.id]) return a.toast("That script isn't in My scripts any more.", "err");
+    if (act === "open") {
+      a.panels.showSide("pine");
+      return a.pineEditor.openScript(part.id);
+    }
+    if (act === "report") {
+      const p = a.panes.find((x) => x.cfg.indicators.some((ind) => ind.uid === part.uid));
+      if (!p) return a.toast("That strategy isn't on a chart any more.", "err");
+      a.setActive(p);
+      a.panels.showStrategyReport(p, part.uid);
+    }
   }
   // Undo a step and everything after it in that answer ("i:k": message i, undo point k).
   async undo(ref) {
@@ -360,6 +451,9 @@ export class Copilot {
     if (!this.cfg?.hasKey) return this.app.openSettings("ai");
     // busy before anything waits, so a second Enter can't start a second answer
     this.busy = true;
+    // the question leaves the box (a suggestion clicked leaves what was typed there)
+    const box = this.el?.isConnected && $("textarea", this.el);
+    if (box && box.value.trim() === q) box.value = "";
     let mod;
     try {
       mod = await loadAgent();
@@ -405,6 +499,8 @@ export class Copilot {
           paint();
         },
         onStep: (call, done) => {
+          // a question with answers to click, and the next steps offered, show as themselves
+          if ((call.name === "ask_person" || call.name === "next_steps") && !done.error) return paint();
           if (done.read && !done.error) a.parts.push({ t: "look", label: done.label });
           else {
             const part = { t: "step", label: done.label || call.name };
@@ -415,6 +511,7 @@ export class Copilot {
               snaps.push(done.snap);
             }
             a.parts.push(part);
+            if (done.script) a.parts.push({ t: "script", ...done.script });
           }
           paint();
         },
@@ -425,6 +522,14 @@ export class Copilot {
             this.asking = { part, resolve };
             this.render();
           }),
+        choose: (question, choices) =>
+          new Promise((resolve) => {
+            const part = { t: "ask", q: question, choices, answer: undefined };
+            a.parts.push(part);
+            this.asking = { part, resolve };
+            this.render();
+          }),
+        offer: (steps) => a.parts.push({ t: "next", steps }),
       });
       a.api = exchanges;
       a.usage = usage;
@@ -433,8 +538,7 @@ export class Copilot {
       if (e.name === "AbortError") a.stopped = true;
       else a.error = e.message;
     } finally {
-      this.asking?.resolve(false);
-      this.asking = null;
+      this.answer(false);
       if (snaps.length) this.after.set(a, this.tools.snapshot());
       a.pending = false;
       this.busy = false;

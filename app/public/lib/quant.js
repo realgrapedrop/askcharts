@@ -7,6 +7,7 @@
 //   - cost stress: double the fees, triple the slippage (at least 0.05% a side, so zero isn't left at zero)
 //   - Monte Carlo: reshuffle the trades thousands of times to see the spread of outcomes
 //   - parameter robustness: do nearby settings hold up, or is it one lucky number?
+//   - 3 months at a time: did it make money in most stretches, or all of it in one run?
 // Each variant's returns come from one full backtest: signals only use past bars, so a variant's
 // return on any bar is the same whether or not later bars exist. Slicing them is look-ahead free.
 import { backtest } from "./backtest.js";
@@ -204,10 +205,57 @@ export function monteCarlo(tradePcts, runs = 2000, seed = 7) {
   };
 }
 
+// The testing period 3 months at a time (a quarter of a year each; a last piece under half that joins the
+// one before): in each stretch the strategy's return, buy and hold over the same bars, and the trades that
+// closed there. It passes when it made money in most of them. Losing less than holding doesn't count: a
+// strategy that made its money in one run and lost or sat still the rest of the time fails. Null under 4.
+export const QUARTER = (365.25 / 4) * 86400;
+export function byQuarter(equity, bars, trades = []) {
+  if (!(equity?.length > 2)) return null;
+  const close = new Map(bars.map((b) => [b.time, b.close]));
+  const t0 = equity[0].time;
+  // the last equity point of each quarter that has any
+  const ends = [];
+  for (let i = 1; i < equity.length; i++) {
+    const k = Math.floor((equity[i].time - t0) / QUARTER);
+    if (ends.length && ends.at(-1).k === k) ends.at(-1).i = i;
+    else ends.push({ k, i });
+  }
+  if (ends.length > 1 && equity.at(-1).time - equity[ends.at(-2).i].time < QUARTER / 2) ends.splice(-2, 1);
+  const rows = ends.map(({ i: e }, n) => {
+    const a = equity[n ? ends[n - 1].i : 0],
+      b = equity[e];
+    const c0 = close.get(a.time),
+      c1 = close.get(b.time);
+    const returnPct = a.value > 0 ? (b.value / a.value - 1) * 100 : null;
+    const buyHoldPct = c0 > 0 && c1 != null ? (c1 / c0 - 1) * 100 : null;
+    return {
+      from: a.time,
+      to: b.time,
+      returnPct,
+      buyHoldPct,
+      trades: trades.filter((t) => t.exitTime > a.time && t.exitTime <= b.time).length,
+    };
+  });
+  if (rows.length < 4) return null;
+  const made = rows.filter((r) => r.returnPct > 0).length;
+  return {
+    rows,
+    made,
+    of: rows.length,
+    gate: {
+      key: "quarters",
+      label: "3 months at a time",
+      value: `Made money in ${made} of ${rows.length} three-month stretches (needs 60%+)`,
+      pass: made / rows.length >= 0.6,
+    },
+  };
+}
+
 // ---------- the checks ----------
 const perBar = (equity) =>
   equity.slice(1).map((e, i) => e.value / equity[i].value - 1);
-const periodsPerYear = (bars) =>
+export const periodsPerYear = (bars) =>
   bars.length > 1
     ? (365 * 86400 * (bars.length - 1)) / (bars.at(-1).time - bars[0].time)
     : 252;
@@ -389,6 +437,9 @@ export function quantChecks(bars, strategy, { mcRuns = 2000, subBars = null } = 
     });
   }
 
+  const quarters = byQuarter(base.equity, bars, base.trades);
+  if (quarters) gates.push(quarters.gate);
+
   // a trade's % is on the money in it; the account only moves by the share positionPct put in
   const sizePct = strategy.positionPct ?? 100;
   const mc = monteCarlo(
@@ -418,6 +469,7 @@ export function quantChecks(bars, strategy, { mcRuns = 2000, subBars = null } = 
     trials: srs.length,
     costStress: stressed.stats.netProfitPct,
     robustness,
+    quarters,
     monteCarlo: mc,
     gates,
     passed: gates.filter((g) => g.pass).length,

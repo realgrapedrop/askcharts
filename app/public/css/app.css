@@ -1246,6 +1246,9 @@ table.t tbody tr:hover {
   flex-direction: column;
   gap: 10px;
 }
+.t-ai { display: flex; flex-direction: column; gap: 8px; max-width: 560px; margin-top: 8px; }
+.t-ai textarea { width: 100%; box-sizing: border-box; min-height: 64px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; resize: vertical; }
+.t-ai textarea:focus { outline: none; border-color: var(--muted); }
 .rules {
   display: flex;
   flex-direction: column;
@@ -2116,6 +2119,7 @@ body .pane .chart.dr-point, body .pane .chart.dr-point * { cursor: pointer !impo
 .pe-msg.warn { color: #f7a600; }
 .dtb-pop.pe-pop { min-width: 220px; padding: 4px 0; }
 .pe-pop button, .pe-pop .pe-link { display: flex; align-items: center; gap: 8px; }
+.pe-pop svg .fill { fill: currentColor; stroke: none; }
 .pe-pop kbd, .lt-pop kbd { margin-left: auto; padding-left: 16px; font: 12px inherit; color: var(--muted); }
 .pe-pop .pe-link { padding: 0 12px; min-height: 32px; color: var(--text); text-decoration: none; font-size: 13px; }
 .pe-pop .pe-link:hover { background: var(--hover); }
@@ -2129,6 +2133,10 @@ body .pane .chart.dr-point, body .pane .chart.dr-point * { cursor: pointer !impo
 .pe-orow { display: grid; grid-template-columns: minmax(0, 1fr) 80px 140px; gap: 12px; align-items: center; height: 38px; padding: 0 10px; border-radius: 6px; cursor: pointer; font-size: 14px; }
 .pe-orow:hover { background: var(--hover); }
 .pe-okind, .pe-odate { color: var(--muted); font-size: 12px; }
+/* Strategy from a template: a name and a line on what it does */
+.pe-trow { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 12px; align-items: center; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.pe-trow:hover { background: var(--hover); }
+.pe-tabout { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 
 /* chart layouts and indicator templates (after TradingView's) */
 .tb.layout-btn { gap: 2px; max-width: 220px; }
@@ -2366,6 +2374,7 @@ body .pane .chart.dr-point, body .pane .chart.dr-point * { cursor: pointer !impo
 .cp-sugg { display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: 8px; }
 .cp-sugg button { text-align: left; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
 .cp-sugg button:hover { background: var(--hover); }
+.cp-next { margin: 4px 0 8px; }
 .cp-msg { display: flex; flex-direction: column; min-width: 0; }
 .cp-user { align-items: flex-end; }
 .cp-bub { max-width: 88%; padding: 8px 12px; border-radius: 12px 12px 2px 12px; background: var(--panel-2); font-size: 13px; overflow-wrap: anywhere; }
@@ -2376,6 +2385,13 @@ body .pane .chart.dr-point, body .pane .chart.dr-point * { cursor: pointer !impo
 .cp-md .cp-h { font-weight: 600; margin: 10px 0 4px; }
 .cp-md code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 1px 4px; border-radius: 3px; background: var(--panel-2); }
 .cp-md a { color: var(--accent); }
+.cp-table { margin: 0 0 8px; overflow-x: auto; }
+.cp-table table { border-collapse: collapse; font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.cp-table th, .cp-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: normal; }
+.cp-table th { color: var(--muted); font-weight: 500; }
+.cp-table th:first-child, .cp-table td:first-child { padding-left: 0; }
+.cp-table .r { text-align: right; }
+.cp-table .c { text-align: center; }
 .cp-code { position: relative; margin: 0 0 8px; }
 .cp-code pre { margin: 0; padding: 10px 12px; border-radius: 6px; background: var(--panel-2); overflow-x: auto; }
 .cp-code pre code { padding: 0; background: none; white-space: pre; }
@@ -2438,6 +2454,12 @@ select.cs-num.ai-in { padding-right: 8px; }
 .cp-ask { padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; flex-wrap: wrap; }
 .cp-ask > span:first-child { flex: 1; min-width: 160px; }
 .cp-ask-btns { display: flex; gap: 6px; }
+/* a question with answers to click, and a saved script's card: open it, its report, its code */
+.cp-choice .cp-ask-btns { flex-wrap: wrap; }
+.cp-card { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.cp-card-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.cp-card-b { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.cp-card .cp-code { margin: 8px 0 0; }
 .cp-ask .btn { height: 28px; padding: 0 12px; border-radius: 6px; }
 
 /* ---------- Settings, About ---------- */
@@ -2644,10 +2666,8 @@ html body .pane .chart [style*="ew-resize"], html body .pane .chart [style*="ew-
 .sr-t .sub { font-size: 12px; }
 .sr-t td.up > div:first-child, .sr-t td.up .sub { color: var(--sr-up); }
 .sr-t td.down > div:first-child, .sr-t td.down .sub { color: var(--sr-down); }
-.dtb-pop.sr-pop { min-width: 240px; padding: 4px 0; }
-.sr-pop button { width: 100%; text-align: left; }
-.sr-pop button.on { color: var(--accent); }
-.sr-pop hr { margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
+/* the strategy name's menu, styled as the report's other menus (below) */
+.dtb-pop.sr-menu.sr-pop { min-width: 240px; padding: 8px; }
 button.sr-chip { border: 0; border-radius: 4px; background: transparent; color: var(--sr-text); font: inherit; cursor: pointer; }
 button.sr-chip:hover { background: var(--chrome-hover); }
 .sr-chip .sr-chev { width: 18px; height: 18px; margin-left: -2px; }
@@ -2696,6 +2716,13 @@ button.sr-chip:hover { background: var(--chrome-hover); }
 .sr-mnote { padding: 6px 6px 2px; color: var(--sr-head); font-size: 12px; }
 .sr-caution { position: sticky; bottom: 8px; display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; margin: 12px auto 0; padding: 8px 12px; border: 1px solid #f59f00; border-radius: 6px; background: var(--menu); font-size: 13px; }
 .sr-caution b { color: #f59f00; }
+/* the report's Quant checks: the tester's gold box, with the two settings to vary */
+.sr-quant { margin: 16px 0 0; }
+.sr-qpick { gap: 12px; margin: 8px 0; }
+.sr-qpick label { display: inline-flex; align-items: center; gap: 6px; }
+.sr-qnote { padding: 6px 10px; border-left: 3px solid #f59f00; background: var(--hover); }
+/* the nearby settings' column headings over their centred cells (the tester's own gold box too) */
+table.t.heat th:not(.l) { text-align: center; }
 .sr-warn { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 50%; background: #f59f00; color: #0f0f0f; font-size: 11px; font-weight: 700; }
 .sr-caution button { padding: 0 2px; border: 0; background: none; color: var(--sr-muted); font-size: 18px; line-height: 1; cursor: pointer; }
 .sr-th { display: flex; align-items: center; gap: 8px; }

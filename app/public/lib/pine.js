@@ -134,6 +134,12 @@ class Parser {
   constructor(toks) {
     this.t = toks;
     this.k = 0;
+    // "type" starts a type only as "type Name" at the start of a line; anywhere else it's a name, as in
+    // getMA(type, src, len) => or type == "EMA"
+    for (let i = 0; i < toks.length; i++) {
+      const x = toks[i];
+      if (x.type === "kw" && x.value === "type" && !(toks[i + 1]?.type === "id" && (i === 0 || ["nl", "indent", "dedent"].includes(toks[i - 1].type)))) x.type = "id";
+    }
     this.udts = new Set(); // the script's own types, so "Pool p = ..." reads as a declaration
   }
   peek(o = 0) {
@@ -160,7 +166,7 @@ class Parser {
     const body = [];
     this.skipNl();
     while (!this.is("eof")) {
-      body.push(this.statement());
+      this.statements(body);
       this.endStatement();
     }
     return node("Block", this.peek(), { body });
@@ -177,11 +183,21 @@ class Parser {
     const start = this.eat("indent");
     const body = [];
     while (!this.is("dedent") && !this.is("eof")) {
-      body.push(this.statement());
+      this.statements(body);
       this.endStatement();
     }
     if (this.is("dedent")) this.next();
     return node("Block", start, { body });
+  }
+  // One statement, or several on one line split by commas (a = 1, b = 2); a comma at the end of a line only
+  // joins the next line to it.
+  statements(body) {
+    body.push(this.statement());
+    while (this.is("op", ",") && this.t[this.k - 1]?.type !== "dedent") {
+      this.next();
+      if (this.is("nl") || this.is("eof") || this.is("dedent")) break;
+      body.push(this.statement());
+    }
   }
   // a function body or an if/for branch: either a block on the next lines or one expression
   bodyAfter() {
@@ -602,6 +618,8 @@ for (const k of ["top_left", "top_center", "top_right", "middle_left", "middle_c
 for (const k of ["gaps_on", "gaps_off", "lookahead_on", "lookahead_off"]) CONST[`barmerge.${k}`] = k;
 for (const k of ["all", "once_per_bar", "once_per_bar_close"]) CONST[`alert.freq_${k}`] = k;
 for (const k of ["right", "left", "none"]) CONST[`scale.${k}`] = k;
+for (const k of ["bold", "italic", "none"]) CONST[`text.format_${k}`] = k;
+for (const k of ["default", "monospace"]) CONST[`font.family_${k}`] = k;
 for (const [k, v] of Object.entries(COLORS)) CONST[`color.${k}`] = hexColor(v);
 // A script's names are looked up in these tables, so they must not inherit Object's members.
 Object.setPrototypeOf(CONST, null);
@@ -612,7 +630,7 @@ const SKIP_PREFIX = ["polyline.", "chart.point."];
 CONST["order.ascending"] = "asc";
 CONST["order.descending"] = "desc";
 const SKIP_FUNCS = new Set(["fill", "bgcolor", "barcolor", "alertcondition", "alert", "log.info", "log.warning", "log.error", "plotarrow", "plotcandle", "plotbar", "max_bars_back"]);
-const UNSUPPORTED_PREFIX = ["request.", "matrix.", "map.", "ticker.", "runtime.", "library"];
+const UNSUPPORTED_PREFIX = ["request.", "matrix.", "map.", "ticker.", "library"];
 // Built-in namespaces: never a variable's name, so ta.ema() and the like skip the receiver lookup.
 const NAMESPACES = new Set(["ta", "math", "str", "color", "input", "request", "strategy", "array", "matrix", "map", "line", "label", "box", "table", "linefill", "polyline", "chart", "syminfo", "timeframe", "barstate", "ticker", "runtime", "log", "session", "dayofweek", "order", "format", "size", "shape", "location", "position", "extend", "xloc", "yloc", "text", "font", "plot", "hline", "display", "currency", "alert", "earnings", "dividends", "splits", "adjustment", "barmerge", "scale"]);
 
@@ -669,6 +687,12 @@ function upgradeOld(ast, version) {
     if (n.type === "Ident" && vars[n.name] && !own.has(n.name)) n.name = vars[n.name];
     // v4's label styles: label.style_labeldown is v5's label.style_label_down
     else if (n.type === "Ident" && /^label\.style_label(up|down|left|right|center)$/.test(n.name)) n.name = n.name.replace("style_label", "style_label_");
+    // v3 and v4's offset(source, n) is source[n]
+    if (n.type === "Call" && n.name === "offset" && !ownFuncs.has("offset") && n.args.length === 2) {
+      Object.assign(n, { type: "Index", target: n.args[0].value, index: n.args[1].value });
+      delete n.name;
+      delete n.args;
+    }
     if (n.type === "Call") {
       if (n.name === "input") {
         // input(defval, title, type, ...) or input(..., type=input.integer)
@@ -1177,6 +1201,13 @@ class Runtime {
     // p.lvl, zone.box.left: fields of a variable holding one of the script's objects
     const dot = nm.indexOf(".");
     if (dot > 0) {
+      // color.red, size.small, timeframe.multiplier: the built-in, even when the script has a variable called color,
+      // size or timeframe (TradingView's way)
+      if (NAMESPACES.has(nm.slice(0, dot))) {
+        if (nm in CONST) return constOf(nm);
+        const v = this.series(nm, this.i);
+        if (v !== undefined) return v;
+      }
       const base = this.lookup(scope, nm.slice(0, dot));
       if (base) return this.fieldOf(base.value, nm.slice(dot + 1).split("."), e.line);
     }
@@ -1266,6 +1297,14 @@ class Runtime {
         return "Etc/UTC";
       case "syminfo.type":
         return /BINANCE|COINBASE|KRAKEN/.test(String(this.ctx.symbol)) ? "crypto" : "stock";
+      // no long names here: the ticker stands in
+      case "syminfo.description":
+        return String(this.ctx.symbol || "").split(":").pop();
+      // TradingView's default chart colours for the page's theme
+      case "chart.bg_color":
+        return hexColor(this.ctx.theme === "light" ? "#FFFFFF" : "#131722");
+      case "chart.fg_color":
+        return hexColor(this.ctx.theme === "light" ? "#131722" : "#D1D4DC");
       case "timeframe.period":
         return pineTf(this.ctx.tf);
       case "timeframe.multiplier":
@@ -1558,7 +1597,7 @@ const pineTf = (tf = "") => {
   const n = Number(m[1]);
   return { s: `${n}S`, m: `${n}`, h: `${n * 60}`, D: n === 1 ? "D" : `${n}D`, W: n === 1 ? "W" : `${n}W`, M: n === 1 ? "M" : `${n}M` }[m[2]];
 };
-function guessMintick(bars) {
+export function guessMintick(bars) {
   let dec = 0;
   for (const b of bars.slice(-200)) for (const v of [b.open, b.close]) {
     const s = String(v);
@@ -1907,7 +1946,31 @@ const BUILTINS = {
   "str.upper": { p: ["source"], f: ({ source }) => String(source).toUpperCase() },
   "str.lower": { p: ["source"], f: ({ source }) => String(source).toLowerCase() },
   "str.replace_all": { p: ["source", "target", "replacement"], f: ({ source, target, replacement }) => String(source).split(target).join(replacement) },
+  // the occurrence-th match (from 0) of target, replaced; the string as it was when there isn't one
+  "str.replace": { p: ["source", "target", "replacement", "occurrence"], f: ({ source, target, replacement, occurrence = 0 }) => {
+    const src = String(source),
+      t = String(target);
+    if (!t) return src;
+    let k = -1;
+    for (let n = 0; n <= Math.trunc(occurrence); n++) if ((k = src.indexOf(t, k + 1)) < 0) return src;
+    return src.slice(0, k) + String(replacement) + src.slice(k + t.length);
+  } },
   "str.tonumber": { p: ["string"], f: ({ string }) => (Number.isFinite(Number(string)) ? Number(string) : NA) },
+  // an empty separator splits into characters, as on TradingView
+  "str.split": { p: ["string", "separator"], f: ({ string, separator }) => new PineArray(String(string).split(String(separator ?? ""))) },
+  "str.trim": { p: ["source"], f: ({ source }) => String(source).trim() },
+  // from begin_pos up to, not including, end_pos (to the end without one)
+  "str.substring": { p: ["source", "begin_pos", "end_pos"], f: ({ source, begin_pos, end_pos }) => String(source).substring(begin_pos, isNa(end_pos) ? undefined : end_pos) },
+  "str.startswith": { p: ["source", "str"], f: ({ source, str }) => String(source).startsWith(String(str)) },
+  "str.endswith": { p: ["source", "str"], f: ({ source, str }) => String(source).endsWith(String(str)) },
+  "str.pos": { p: ["source", "str"], f: ({ source, str }) => {
+    const k = String(source).indexOf(String(str));
+    return k < 0 ? NA : k;
+  } },
+  // stops the script with the script's own message, as TradingView's does
+  "runtime.error": { p: ["message"], f: function ({ message }) {
+    throw new PineError(String(message ?? "runtime.error"), this.line);
+  } },
   // ---- colours
   "color.new": { p: ["color", "transp"], f: ({ color, transp = 0 }) => (isColor(color) ? { ...color, a: color.a * (1 - transp / 100) } : NA) },
   "color.rgb": { p: ["red", "green", "blue", "transp"], f: ({ red, green, blue, transp = 0 }) => rgba(red, green, blue, 1 - transp / 100) },
@@ -2136,6 +2199,13 @@ const BUILTINS = {
       m = s.length >> 1;
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   } },
+  // TradingView's nearest rank: of the last length values, the one that percentage % of them are at or below
+  "ta.percentile_nearest_rank": { p: ["source", "length", "percentage"], s: 1, f: ({ source, length, percentage }, st) => {
+    const w = lastN(win(st, source), L(length));
+    if (!w || isNa(percentage)) return NA;
+    const s = [...w].sort((a, b) => a - b);
+    return s[Math.max(0, Math.ceil((Math.min(100, Math.max(0, percentage)) / 100) * s.length) - 1)];
+  } },
   "ta.percentrank": { p: ["source", "length"], s: 1, f: ({ source, length }, st) => {
     const h = lastN(win(st, source, true), L(length) + 1);
     if (!h) return NA;
@@ -2363,6 +2433,26 @@ const BUILTINS = {
     if (a.when === undefined || truthy(a.when)) this.strat.cancel(null);
     return NA;
   } },
+  // the open trades, oldest first (trade_num 0), as on TradingView; na for a number that isn't open
+  ...Object.fromEntries(
+    Object.entries({
+      entry_price: (t) => t.price,
+      entry_bar_index: (t) => t.index,
+      entry_time: (t) => t.time * 1000,
+      entry_id: (t) => t.id,
+      entry_comment: (t) => t.comment ?? "",
+      size: (t) => t.dir * t.qty,
+      commission: (t) => t.fee,
+      profit: (t, s) => t.dir * t.qty * (s.bars[s.i].close - t.price) - t.fee,
+    }).map(([k, get]) => [
+      `strategy.opentrades.${k}`,
+      { p: ["trade_num"], f: function ({ trade_num }) {
+        this.needStrat(`strategy.opentrades.${k}`);
+        const t = this.strat.entries[Math.trunc(trade_num)];
+        return t ? get(t, this.strat) : NA;
+      } },
+    ]),
+  ),
   "strategy.risk.allow_entry_in": { p: ["value"], f: function (a) {
     this.needStrat("strategy.risk.allow_entry_in");
     this.strat.allow = a.value;

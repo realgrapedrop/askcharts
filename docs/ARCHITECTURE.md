@@ -14,8 +14,9 @@ data is kept.
 - **The gateway** (`gateway/`) only runs on a server. It's the passkey sign-in in front of the app, so nothing on
   the internet reaches the app without it. On your own computer the page talks to the app directly.
 - **The app server** (`app/server.js` and `app/lib/`) answers the page. It fetches prices from the public sources,
-  and from Alpaca or Polygon when you've added your own key. It reads the stored history, runs your alerts, and
-  sends AskCharts AI's questions to the provider you picked (Anthropic, OpenAI or xAI) with your key.
+  and from Alpaca or Polygon when you've added your own key. It reads the stored history, runs your alerts and
+  the AI's strategy backtests, and sends AskCharts AI's questions to the provider you picked (Anthropic, OpenAI or
+  xAI) with your key.
 - **The runner** (`run.mjs`) starts the app and keeps it running. It runs the history importers each hour, and
   when you ask for something in Settings. It keeps the XRPL collector going while it's on, and checks for updates
   once a day.
@@ -63,6 +64,9 @@ key is never sent back to the page.
 2. The app server adds AskCharts' own guide and sends it all to your provider, with your key.
 3. If the model wants to look at or change the chart, it asks for a tool. The page runs it and sends the result
    back, and this repeats until the model has its answer.
+   The backtests for its strategy research are the exception, since the app server runs those itself, two at a time
+   and each in its own worker with a time and memory limit. The server reads Pine one step at a time and never
+   turns it into JavaScript.
 4. Every change it makes shows as a step you can undo. Removing several things always asks you first.
 
 ## A few rules it keeps

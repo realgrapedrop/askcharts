@@ -115,6 +115,13 @@ export async function step(input, res, fetchImpl = fetch) {
   res.on("close", () => {
     if (!res.writableEnded) ac.abort();
   });
+  // The answer starts at once, not when the provider's does: Cloudflare cuts one that sends nothing for 100 s,
+  // and a model can think that long over a big tool result (a strategy scan) before its first word. A comment
+  // line every 15 s keeps it open (the page reads only data lines); a provider's refusal comes as an error.
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+  send({ t: "start", model: c.modelName || c.model });
+  const beat = setInterval(() => res.writableEnded || res.write(": thinking\n\n"), Number(process.env.QT_AI_BEAT_MS) || 15_000);
   try {
     let r;
     const post = (q) => fetchImpl(q.url, { method: "POST", headers: q.headers, body: JSON.stringify(q.body), signal: ac.signal });
@@ -142,9 +149,6 @@ export async function step(input, res, fetchImpl = fetch) {
       const body = await r.json().catch(() => ({}));
       throw bad(apiError(r.status, body, c.key, p), r.status === 429 ? 429 : 502);
     }
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-    const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
-    send({ t: "start", model: c.modelName || c.model });
     if (openai) {
       let done = null;
       try {
@@ -195,7 +199,14 @@ export async function step(input, res, fetchImpl = fetch) {
       send({ t: "done", stop, usage: { input: usage.input_tokens || 0, output: usage.output_tokens || 0, cached: usage.cache_read_input_tokens || 0 } });
       res.end();
     }
+  } catch (e) {
+    if (!res.writableEnded) {
+      send({ t: "error", message: e.message });
+      send({ t: "done", stop: null, usage: { input: 0, output: 0, cached: 0 } });
+      res.end();
+    }
   } finally {
+    clearInterval(beat);
     busy = false;
   }
 }

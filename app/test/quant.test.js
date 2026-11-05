@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { normCdf, normInv, psr, expectedMaxSharpe, pbo, monteCarlo, quantChecks } from '../public/lib/quant.js';
+import { normCdf, normInv, psr, expectedMaxSharpe, pbo, monteCarlo, quantChecks, byQuarter, QUARTER } from '../public/lib/quant.js';
 import { EXAMPLE_STRATEGIES } from '../public/lib/backtest.js';
 
 const bars = JSON.parse(readFileSync(new URL('./fixtures/btc-1d.json', import.meta.url), 'utf8'));
@@ -50,7 +50,8 @@ test('Monte Carlo is reproducible and its percentiles are ordered', () => {
 test('quant checks run on a real strategy and report every gate', () => {
   const r = quantChecks(bars, EXAMPLE_STRATEGIES['EMA cross (9/21)'], { mcRuns: 300 });
   assert.equal(r.variants.length, 25, 'two lengths x five settings');
-  assert.deepEqual(r.gates.map((g) => g.key).sort(), ['cost', 'dsr', 'pbo', 'robust', 'wf']);
+  assert.deepEqual(r.gates.map((g) => g.key).sort(), ['cost', 'dsr', 'pbo', 'quarters', 'robust', 'wf']);
+  assert.ok(r.quarters.of >= 4 && r.quarters.rows.every((x) => x.from < x.to));
   assert.ok(r.pbo.pbo >= 0 && r.pbo.pbo <= 1);
   assert.equal(r.pbo.splits, 70);
   assert.equal(r.walkForward.folds.length, 5);
@@ -72,4 +73,34 @@ test('Monte Carlo scales trades by position size, and cost stress adds slippage 
   const noCostStress = quantChecks(bars, { ...strat, feePct: 0 }, { mcRuns: 100 });
   assert.ok(noCostStress.costStress < noCostStress.base.netPct, 'stress still costs something with zero fees and slippage');
   assert.match(noCostStress.gates.find((g) => g.key === 'cost').value, /0\.05% slippage/);
+});
+
+test('3 months at a time: a strategy that made its money in one run fails, one that made money in most passes', () => {
+  // a year and a half of daily bars: the price rises 50% in its 3rd quarter and drifts up a little the rest of the time
+  const day = 86400, t0 = 1_600_000_000;
+  const bars = Array.from({ length: 548 }, (_, i) => ({ time: t0 + i * day, close: 100 * (1 + 0.0002 * i) * (i > 273 ? 1.5 : 1 + (i > 182 ? ((i - 182) / 91) * 0.5 : 0)) }));
+  const curve = (f) => bars.map((b, i) => ({ time: b.time, value: f(i) }));
+  // all its money in the run, a slow loss the rest of the time
+  const oneRun = byQuarter(curve((i) => 1000 * (1 - 0.0001 * i) * (i > 182 && i <= 273 ? 1 + ((i - 182) / 91) * 0.6 : i > 273 ? 1.6 : 1)), bars);
+  assert.equal(oneRun.of, 6);
+  assert.equal(oneRun.made, 1);
+  assert.equal(oneRun.gate.pass, false);
+  assert.match(oneRun.gate.value, /^Made money in 1 of 6 three-month stretches \(needs 60%\+\)$/);
+  // a little every quarter
+  const steady = byQuarter(curve((i) => 1000 * (1 + 0.0005 * i)), bars);
+  assert.equal(steady.made, 6);
+  assert.equal(steady.gate.pass, true);
+  // in a fall, losing less than holding isn't making money, and neither is sitting still
+  const falling = bars.map((b, i) => ({ ...b, close: 100 - i * 0.1 }));
+  const lessLoss = byQuarter(curve((i) => 1000 - i * 0.2), falling);
+  assert.ok(lessLoss.rows.every((x) => x.returnPct < 0 && x.returnPct > x.buyHoldPct));
+  assert.equal(lessLoss.made, 0);
+  assert.equal(byQuarter(curve(() => 1000), falling).made, 0);
+  // the stretches share their edges and cover the whole period; a last piece under half a quarter joins the one before
+  assert.equal(steady.rows[0].from, bars[0].time);
+  assert.equal(steady.rows.at(-1).to, bars.at(-1).time);
+  assert.ok(steady.rows.every((x, i) => !i || x.from === steady.rows[i - 1].to));
+  assert.ok(bars.at(-1).time - steady.rows.at(-1).from < QUARTER * 1.5);
+  // under a year, no check
+  assert.equal(byQuarter(curve((i) => 1000 + i).slice(0, 300), bars), null);
 });

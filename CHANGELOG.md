@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.25 (2026-11-05)
+
+AskCharts AI can now write Pine strategies, backtest them and look for one that suits a coin or a stock. It runs the
+quant checks on its own results before it shows you anything. The strategy templates work without an AI key.
+
+- Try "Find a strategy for XRP" or "Which indicators work best on BTC on the 4 hour?". The AI tests eight kinds of
+  strategy, each with a range of settings, on the 1 hour, 4 hour and daily charts. It uses the last 2 years and
+  trades long only unless you say otherwise. Settings are picked on the first 70% of the bars and scored once on the
+  last 30%, which they never saw. Fees are on, 0.1% a side for crypto and none for US stocks unless you name one.
+  The answer compares the pick with buy and hold, says how many versions it tried and what the interval means for
+  how long a trade lasts. It also offers to test shorts. If nothing holds up it says so, and it never promises a
+  profit.
+- You can also describe one, like "Build me a strategy that buys when RSI crosses up through 30 and sells at 70".
+  The AI writes it in standard Pine v6, checks that it runs and fixes its own errors. Then it saves it to My
+  scripts, puts it on the chart and opens its report. Its card in the chat has Open in Pine Editor, Strategy tester
+  and Show the code, and Undo takes the script off the chart and out of My scripts again. Answers can end with next
+  steps to click, like Put it on the chart or Test long and short too. Both of these need an AI key in Settings,
+  AskCharts AI.
+- Pine strategies get a third view in the strategy report, Quant checks, behind the shield next to Metrics and List
+  of trades. It runs the script again with nearby values of two of its number settings (you pick which), and once
+  more with double the fees. That gives Pine the checks that rule strategies already had: walk forward, the odds the
+  best settings were luck (PBO), the deflated Sharpe ratio, a cost stress test, Monte Carlo on the trades and
+  whether nearby settings hold up.
+- There's a new quant check too, 3 months at a time, for Pine and rule strategies alike. It puts the strategy beside
+  buy and hold in each 3 month stretch and passes when the strategy made money in at least 60% of them. With fewer
+  than 4 stretches it's left out.
+- Eight strategies come ready to use, and they need no AI key. Strategy from a template… is under Create new in
+  the menu that opens when you click the script's name at the top of the Pine Editor. The list has Moving average
+  cross, MACD cross, Supertrend, Channel breakout, RSI bounce, Bollinger bounce, Pullback in an uptrend and
+  Momentum, each explained in plain words. One click saves it to My scripts, adds it to the chart and opens its
+  report. Each one trades the whole account with the chart's fee filled in, and the three trend ones can trade
+  short.
+- There are more ways to ask for a strategy. Write with AI…, also under Create new, opens AskCharts AI ready for
+  your description, and the empty Strategy tester has a box where you describe one in plain words. On a Pine
+  strategy's report, the menu on its name lists the strategies on the chart, then Build a strategy for me and Pick
+  the rules myself.
+- A new name from Rename… in the Pine Editor now shows straight away. The Indicators dialog and its search list the
+  script by its new name, and so do the strategy report and its menu. The chart's legend still shows the title from
+  the code, with its settings.
+- Pine runs more scripts. It now handles several statements on one line split by commas, `type` as a name,
+  `ta.percentile_nearest_rank`, more `str.` functions and `runtime.error`. It also has the `strategy.opentrades.`
+  details (entry price, bar and time, size, profit and more), `syminfo.description`, and `chart.bg_color` and
+  `chart.fg_color` from your theme. In my test set of 512 community scripts, 320 run now, up from 284.
+- A table in an AI answer now shows as a table instead of lines of `|`.
+- The AI's backtests run in the app server, two at a time, each in its own worker with a 512 MB and 90 second limit.
+  The interpreter reads Pine one step at a time and never turns it into JavaScript. On a server behind the sign in,
+  an account can make 120 research requests in 10 minutes, and app/docs/api.md covers the four new routes.
+- Alerts on a strategy aren't built yet, and Pine's `request.security`, `time()` sessions and libraries don't run
+  yet. The AI knows this, so it says so and offers what works instead.
+
 ## 0.1.24 (2026-11-02)
 
 Minute and hour charts draw again after the clocks went back, and one alert can watch a whole watchlist.

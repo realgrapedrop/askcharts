@@ -54,6 +54,7 @@ before(async () => {
       origin: "http://localhost:0", rpID: "localhost", email: "You@Example.com",
       sessionDays: 7, linkMinutes: 15, dataDir,
       trustProxy: "cloudflare", // as behind a Cloudflare tunnel
+      researchMax: 3, // strategy research a session may run in 10 minutes (120 for real)
     },
     { verifyPasskey: fakeVerify },
   );
@@ -440,4 +441,17 @@ test("a misspelled TRUST_PROXY stops the gateway from starting", () => {
     () => createGateway({ host: "127.0.0.1", port: 0, upstream: `127.0.0.1:${upPort}`, origin, rpID: "localhost", email: "You@Example.com", sessionDays: 7, linkMinutes: 15, dataDir, trustProxy: "cloudfare" }),
     /TRUST_PROXY/,
   );
+});
+
+// ---------- the terminal's strategy research: no passkey, a cap per account ----------
+test("strategy research needs no passkey and stops at the cap for 10 minutes", async () => {
+  const before = seen.length;
+  for (const p of ["/api/pine/check", "/api/pine/sweep", "/api/market/profile"]) assert.equal((await write("POST", p)).status, 200, p);
+  assert.equal(seen.length, before + 3);
+  const r = await write("POST", "/api/pine/scan");
+  assert.equal(r.status, 429);
+  assert.match((await r.json()).error, /strategy tests in 10 minutes/);
+  assert.equal(seen.length, before + 3, "the one over the cap never reaches the terminal");
+  // other writes carry on
+  assert.equal((await write("POST", "/api/import/bars?name=c.csv")).status, 200);
 });

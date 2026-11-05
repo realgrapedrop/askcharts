@@ -197,6 +197,8 @@ Everyday, without Docker:
   publishing it on every address would put AskCharts online without HTTPS.
 - AskCharts runs indicator code on the server. That's why everything is behind the sign in, and why saving
   a JavaScript indicator asks for your passkey again.
+- AskCharts AI's strategy research runs Pine backtests on the server, two at a time and each with a time and
+  memory limit, and the sign in lets an account make 120 research requests in 10 minutes.
 - One account, no sign up. Passkeys can't be phished or guessed.
 
 ## Let your AI set it up

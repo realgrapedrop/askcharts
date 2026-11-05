@@ -22,6 +22,7 @@ import * as heatmap from "./lib/heatmap.js";
 import * as catalog from "./lib/catalog.js";
 import * as history from "./lib/history.js";
 import * as onchain from "./lib/onchain.js";
+import * as pinerun from "./lib/pinerun.js";
 import * as updates from "./lib/updates.js";
 import { registerIndicator, INDICATORS } from "./public/lib/indicators.js";
 import { conditionFn, backtest, magnifierTf } from "./public/lib/backtest.js";
@@ -315,6 +316,13 @@ async function handle(req, res) {
         }
       });
       return send(res, 200, results);
+    }
+    // Pine on the server, for the AI's research (lib/pinerun.js): each job in a worker thread of its own,
+    // stopped when its request closes
+    if (req.method === "POST" && pinerun.ROUTES.has(p)) {
+      const ac = new AbortController();
+      res.on("close", () => res.writableEnded || ac.abort());
+      return send(res, 200, await pinerun.ROUTES.get(p)(await readBody(req), ac.signal));
     }
     // The strategy tester on the server, for your own code (docs/api.md). Same rule format as the tester.
     if (p === "/api/backtest" && req.method === "POST") {

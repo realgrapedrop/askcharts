@@ -5,6 +5,8 @@
 import { esc } from "./api.js";
 import { compilePine, runPine, pineIndicator, PineError } from "../lib/pine.js";
 import { registerIndicator, BY_ID, INDICATORS } from "../lib/indicators.js";
+import { TEMPLATES, templateCode } from "../lib/pinetemplates.js";
+import { PRODUCTS } from "./products.js";
 
 const svg = (b) => `<svg viewBox="0 0 24 24">${b}</svg>`;
 const I = {
@@ -20,6 +22,8 @@ const I = {
   more: svg('<circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/>'),
   console: svg('<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10l3 2-3 2M13 15h3"/>'),
   chev: '<svg viewBox="0 0 18 18" class="pe-chev"><path d="M5 7.5l4 4 4-4"/></svg>',
+  // AskCharts AI's robot, as on its button
+  ai: `<svg viewBox="-1.5 0 31 28">${PRODUCTS.find((p) => p.id === "copilot").icon}</svg>`,
 };
 // the name in a new script's header, as TradingView puts your username there
 const AUTHOR = "you";
@@ -88,6 +92,13 @@ export class PineEditor {
     return !s || s.code !== d.code || s.name !== d.name;
   }
 
+  // A script gone from My scripts (an AI step undone): off the indicator list too.
+  forget(id) {
+    const k = INDICATORS.findIndex((x) => x.id === `pine:${id}`);
+    if (k >= 0) INDICATORS.splice(k, 1);
+    delete BY_ID[`pine:${id}`];
+  }
+
   // ---- startup: every saved script joins the indicator list (silently skipping broken ones)
   registerAll() {
     for (const [id, s] of Object.entries(this.scripts())) {
@@ -100,9 +111,19 @@ export class PineEditor {
   }
   register(id, code) {
     const compiled = compilePine(code);
-    const def = pineIndicator(`pine:${id}`, compiled, () => ({ symbol: this.app.active?.cfg.symbol, tf: this.app.active?.cfg.tf }));
+    const def = pineIndicator(`pine:${id}`, compiled, () => ({ symbol: this.app.active?.cfg.symbol, tf: this.app.active?.cfg.tf, theme: this.app.settings.theme }));
+    // the name it's saved under in My scripts (Rename…, a numbered copy) for the lists; the legend keeps its title
+    const saved = this.scripts()[id]?.name;
+    if (saved) def.saved = String(saved).slice(0, 80);
     registerIndicator(def);
     return { compiled, def };
+  }
+  // a new name shows at once in the Indicators dialog and the strategy report, without running it again
+  relist(id) {
+    const def = BY_ID[`pine:${id}`];
+    if (!def) return;
+    def.saved = String(this.scripts()[id]?.name || "").slice(0, 80) || undefined;
+    for (const q of this.app.panes) if (q.cfg.indicators.some((x) => x.id === def.id)) q.render(false);
   }
 
   // ---- the panel
@@ -299,7 +320,7 @@ export class PineEditor {
     // a first run on this chart's bars, so a mistake that only shows when running keeps its line
     if (p?.shown.length) {
       try {
-        runPine(compiled, p.shown.slice(-500), {}, { symbol: p.cfg.symbol, tf: p.cfg.tf });
+        runPine(compiled, p.shown.slice(-500), {}, { symbol: p.cfg.symbol, tf: p.cfg.tf, theme: this.app.settings.theme });
       } catch (e) {
         return this.fail(e);
       }
@@ -348,7 +369,7 @@ export class PineEditor {
       .slice(0, 5);
     const pop = tb.openPopover(
       btn,
-      `<button data-m="save"><span>Save script</span><kbd>Ctrl+S</kbd></button><button data-m="copy" ${d.id ? "" : "disabled"}><span>Make a copy…</span></button><button data-m="rename"><span>Rename…</span></button><hr><div class="pe-mh">Create new</div><button data-m="new-ind">${I.script}<span>Indicator</span></button><button data-m="new-strat">${I.run}<span>Strategy</span></button><button disabled title="Libraries aren't supported here yet"><span>Library</span></button><hr><button data-m="open"><span>Open script…</span></button>${recent.length ? `<div class="pe-mh">Recently used</div>${recent.map(([sid, sc]) => `<button data-recent="${esc(sid)}"><span>${esc(sc.name)}</span></button>`).join("")}` : ""}<hr><button data-m="delete" ${d.id ? "" : "disabled"}><span>Delete script</span></button>`,
+      `<button data-m="save"><span>Save script</span><kbd>Ctrl+S</kbd></button><button data-m="copy" ${d.id ? "" : "disabled"}><span>Make a copy…</span></button><button data-m="rename"><span>Rename…</span></button><hr><div class="pe-mh">Create new</div><button data-m="new-ind">${I.script}<span>Indicator</span></button><button data-m="new-strat">${I.run}<span>Strategy</span></button><button data-m="new-tpl">${I.run}<span>Strategy from a template…</span></button><button data-m="new-ai">${I.ai}<span>Write with AI…</span></button><button disabled title="Libraries aren't supported here yet"><span>Library</span></button><hr><button data-m="open"><span>Open script…</span></button>${recent.length ? `<div class="pe-mh">Recently used</div>${recent.map(([sid, sc]) => `<button data-recent="${esc(sid)}"><span>${esc(sc.name)}</span></button>`).join("")}` : ""}<hr><button data-m="delete" ${d.id ? "" : "disabled"}><span>Delete script</span></button>`,
       "pe-menu",
     );
     pop.classList.add("dtb-list", "pe-pop");
@@ -364,10 +385,16 @@ export class PineEditor {
       tb.closePopover();
       if (m === "new-ind" || m === "new-strat") this.fresh(m === "new-ind" ? NEW_INDICATOR : NEW_STRATEGY, m === "new-ind" ? "Untitled script" : "Untitled strategy");
       if (m === "open") this.openDialog();
+      if (m === "new-tpl") this.templateDialog();
+      // AskCharts AI opens with the request started, for them to finish
+      if (m === "new-ai") this.app.copilot.compose("Write a Pine strategy that ");
       if (m === "save") this.save();
       if (m === "rename") this.nameDialog("Rename script", d.name, (n) => {
         d.name = n;
-        if (d.id) this.save(true);
+        if (d.id) {
+          this.save(true);
+          this.relist(d.id);
+        }
         this.title();
       });
       if (m === "copy") this.nameDialog("Make a copy", `${d.name} copy`, (n) => {
@@ -451,6 +478,37 @@ export class PineEditor {
       this.app.persist();
       this.mount(this.el);
     };
+  }
+  // Strategy from a template: the ready-made strategies in plain words. One click puts it in the
+  // editor, saves it to My scripts, adds it to the chart and opens its report in the Strategy tester.
+  templateDialog() {
+    const card = this.app.modal(
+      "Strategy from a template",
+      `<p class="hint-text">Ready-made strategies to add to the chart and backtest, no AI key needed. Each one trades the whole account from 10,000, with the fee for this chart's market, and every number is a setting you can change on the chart.</p><div class="pe-open">${TEMPLATES.map((t) => `<div class="pe-trow" data-tpl="${esc(t.id)}"><div><b>${esc(t.name)}</b><span class="pe-tabout">${esc(t.about[0].toUpperCase() + t.about.slice(1))}</span></div><span class="pe-okind">${esc(t.kind)}</span></div>`).join("")}</div>`,
+    );
+    card.classList.add("pe-open-card");
+    card.querySelector(".pe-open").onclick = (e) => {
+      const t = TEMPLATES.find((x) => x.id === e.target.closest("[data-tpl]")?.dataset.tpl);
+      if (!t) return;
+      this.app.closeModal();
+      this.fromTemplate(t);
+    };
+  }
+  fromTemplate(t) {
+    const symbol = this.app.active?.cfg.symbol;
+    const code = templateCode(t, { symbol });
+    const saved = Object.entries(this.scripts());
+    // the same template already in My scripts, unchanged: that one, not a copy
+    const same = saved.find(([, s]) => s.name === t.name && s.code === code);
+    if (same) {
+      this.openScript(same[0]);
+      return this.addToChart();
+    }
+    // the name taken (an edited copy, or the other market's fee): the next free number
+    let name = t.name;
+    for (let k = 2; saved.some(([, s]) => s.name === name); k++) name = `${t.name} ${k}`;
+    this.fresh(name === t.name ? code : code.replace(`strategy("${t.name}"`, `strategy("${name}"`), name);
+    this.addToChart();
   }
   openScript(id) {
     const s = this.scripts()[id];

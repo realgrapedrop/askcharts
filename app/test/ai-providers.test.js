@@ -441,3 +441,58 @@ test("Anthropic is spoken to as before, and removing one provider's key leaves t
   assert.equal(pub.hasKey, true);
   leaks();
 });
+
+test("a model thinking a long time: comment lines keep the answer open (the tunnel cuts a quiet one), none after the end", async () => {
+  // xAI and Anthropic, each quiet for a while before its first word
+  const late = (url, body) => (r) =>
+    r.url === url &&
+    ((res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      setTimeout(() => res.end(body), 150);
+    });
+  process.env.QT_AI_BEAT_MS = "30";
+  try {
+    for (const [provider, model, url, body] of [
+      ["xai", "grok-4", "/v1/chat/completions", chunks([{ delta: { role: "assistant", content: "Done." } }, { delta: {}, finish_reason: "stop" }])],
+      ["anthropic", "claude-test", "/v1/messages", `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "text_delta", text: "Done." } })}\n\nevent: message_delta\ndata: ${JSON.stringify({ delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } })}\n\n`],
+    ]) {
+      await copilot.setConfig({ provider, model });
+      reply = late(url, body);
+      const res = fakeRes();
+      await step({ messages: [{ role: "user", content: "Think it over" }] }, res);
+      const quiet = res.chunks.filter((c) => c.startsWith(":"));
+      assert.ok(quiet.length >= 2, `${provider}: ${quiet.length} comment lines`);
+      assert.ok(quiet.every((c) => !c.includes("data:") && c.endsWith("\n\n")));
+      // the page reads only the data lines, as before
+      const ev = res.chunks.filter((c) => c.startsWith("data:")).map((c) => JSON.parse(c.slice(5)));
+      assert.equal(ev.filter((e) => e.t === "text").map((e) => e.v).join(""), "Done.");
+      assert.equal(ev.at(-1).t, "done");
+      const n = res.chunks.length;
+      await new Promise((ok) => setTimeout(ok, 90));
+      assert.equal(res.chunks.length, n, `${provider}: nothing after the end`);
+    }
+  } finally {
+    delete process.env.QT_AI_BEAT_MS;
+    reply = () => null;
+  }
+});
+
+test("a provider turning the question down, once the answer has started: its words as an error, then done", async () => {
+  await copilot.setConfig({ provider: "xai", model: "grok-4" });
+  reply = (r) => r.url === "/v1/chat/completions" && ((res) => res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ code: "Too many requests", error: "slow" })));
+  const res = fakeRes();
+  try {
+    await step({ messages: [{ role: "user", content: "Hi" }] }, res);
+  } finally {
+    reply = () => null;
+  }
+  const ev = events(res);
+  assert.equal(ev[0].t, "start");
+  assert.match(ev.find((e) => e.t === "error").message, /^xAI says slow down/);
+  assert.equal(ev.at(-1).t, "done");
+  assert.ok(res.writableEnded);
+  // and the next question isn't refused as still working
+  const again = fakeRes();
+  await step({ messages: [{ role: "user", content: "Hi" }] }, again);
+  assert.equal(events(again).at(-1).t, "done");
+});

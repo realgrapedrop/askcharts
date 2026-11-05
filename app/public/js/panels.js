@@ -1374,9 +1374,11 @@ export function initPanels(app) {
   // TradingView's report for a Pine strategy on the chart; the rule builder for strategies without code
   const report = new StrategyReport(app);
   let tMode = "report";
-  const toBuilder = () => {
+  const toBuilder = (how) => {
     tMode = "builder";
     renderTester();
+    // Build a strategy for me: straight to the box that describes one
+    if (how === "ai") $("#tAiText")?.focus();
   };
   const tState = {
     groups: null,
@@ -1462,7 +1464,8 @@ export function initPanels(app) {
       <h4>Your own data</h4><div class="row-flex"><button class="btn small" id="tImpBars">Import bars (CSV)</button><button class="btn small" id="tImpSig">Import signal (CSV)</button><input type="file" id="tImpFile" accept=".csv,.txt,text/csv" hidden></div>
       <p class="hint-text">Bars: time, open, high, low, close and volume, one symbol per file (an Alpaca export works as it is). They chart as CSV:NAME on their own timeframe and longer. Signal: time and position, 1 long, 0 flat, -1 short, from that bar's close. It loads here as rules, so Run on chart and the quant checks test your strategy as written.</p>
       <div class="row-flex" style="margin-top:12px"><button class="btn" id="tSave">Save strategy</button><button class="btn" id="tJson">Edit as JSON</button></div>
-    </div><div class="right" id="tOut"><div class="hint-text">Pick or build a strategy, then press <b>Run on chart</b>. It runs on the active chart's symbol and timeframe.</div></div></div>`;
+    </div><div class="right" id="tOut"><div class="hint-text">Pick or build a strategy, then press <b>Run on chart</b>. It runs on the active chart's symbol and timeframe.</div>
+      <div class="t-ai"><b>Or describe one in plain words</b><textarea id="tAiText" rows="3" placeholder="Buy when RSI goes under 30 and sell when it goes over 70, with a 5% stop loss">${esc(tState.aiText || "")}</textarea><div class="row-flex"><button class="btn primary" id="tAiGo">Build it with AI</button><span class="hint-text">AskCharts AI writes it as a Pine strategy, tests it on this chart and opens its report.</span></div></div></div></div>`;
     for (const k of ["entryLong", "exitLong", "entryShort", "exitShort"])
       bindRules(bottom.querySelector(`[data-g="${k}"]`));
     bottom.querySelectorAll("[data-add]").forEach((b) => {
@@ -1492,6 +1495,23 @@ export function initPanels(app) {
       renderTester();
     };
     $("#tRun").onclick = runTester;
+    // described in plain words: sent to AskCharts AI, which writes and tests it
+    const aiText = $("#tAiText");
+    const aiGo = () => {
+      const t = aiText.value.trim();
+      if (!t) return aiText.focus();
+      tState.aiText = "";
+      app.copilot.compose(`Build me a strategy and backtest it: ${t}`, { send: true });
+    };
+    aiText.oninput = () => (tState.aiText = aiText.value);
+    aiText.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        aiGo();
+      }
+    };
+    $("#tAiGo").onclick = aiGo;
     if ($("#tReport"))
       $("#tReport").onclick = () => {
         tMode = "report";

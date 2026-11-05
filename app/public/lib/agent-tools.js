@@ -5,8 +5,11 @@
 //
 // `runs`: "page" tools run in the open AskCharts tab (the page holds the charts); "server" tools run
 // on the server. `read`: changes nothing. `view`: changes only what's on screen, nothing saved (no
-// Undo needed). Everything else is a change the person can undo.
+// Undo needed). Everything else is a change the person can undo. `ends`: the answer ends with it (the
+// model isn't asked again after it).
 //
+// Pine scripts are allowed: the interpreter walks them and never turns them into JavaScript, here or on
+// the server (lib/pinerun.js).
 // Never here, on purpose: JavaScript indicators (they run as code), keys and data feed settings,
 // accounts and sign-in, files, free-form network access, alert webhooks, and
 // paper or live trading.
@@ -20,6 +23,8 @@ const drawingList = DRAWABLE.map((t) => `${t.id} (${t.label}, ${t.points ? `${t.
 
 const chartArg = { type: "integer", minimum: 1, description: "Which chart in the layout, 1 for the first. Leave out for the active chart." };
 const when = (what) => ({ type: "string", description: `${what}: a date and time in UTC, like 2026-10-19 or 2026-10-19T14:30.` });
+// how far back the research tools test; the same on each, so a check and its sweep cover the same bars
+const years = { type: "number", description: "How far back to test, in years, like 1 or 5. Leave out for the last 2 years." };
 const point = {
   type: "object",
   description: "One anchor. Give bars_ago (0 is the latest bar) or time, and either price or at.",
@@ -263,6 +268,115 @@ export const AGENT_TOOLS = [
     runs: "page",
     description: "Remove drawings by id, or all on the chart's symbol. More than three, or all, asks the person first.",
     input_schema: { type: "object", properties: { chart: chartArg, ids: { type: "array", items: { type: "string" } }, all: { type: "boolean" } } },
+  },
+  // ---------- questions ----------
+  {
+    name: "ask_person",
+    runs: "page",
+    read: true,
+    description:
+      "Ask the person one short question with 2 to 5 answers to click, only when you can't go on without it (like which of two symbols they meant). Where a default covers it (long only, the last 2 years, 1h, 4h and 1D), use the default and say which instead of asking. Returns the answer they picked, or that they didn't answer. Don't ask what you can find out with a tool.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "One short question." },
+        choices: { type: "array", items: { type: "string" }, description: "2 to 5 short answers, a few words each." },
+      },
+      required: ["question", "choices"],
+    },
+  },
+  {
+    name: "next_steps",
+    runs: "page",
+    read: true,
+    ends: true,
+    description:
+      'End your answer with 1 to 3 next steps shown as buttons under it, like "Put it on the chart" or "Test long and short too". A click sends the words as the person\'s next message, so word each one as their request to you, a few words long. Use it in place of ending on an offer or a question about what to do next. Call it last, after your text: your answer ends there.',
+    input_schema: {
+      type: "object",
+      properties: { steps: { type: "array", items: { type: "string" }, description: "1 to 3 next steps, a few words each, in the person's words." } },
+      required: ["steps"],
+    },
+  },
+  // ---------- Pine strategies: write, test, prove, research ----------
+  {
+    name: "market_character",
+    runs: "page",
+    read: true,
+    description:
+      "A symbol's character on an interval over the last 2 years (at most 19,500 bars): trending, mean reverting or neither (variance ratios), volatility, the typical move and range per bar, buy and hold, the worst drop, and the bars, dates and source. Tells which kinds of strategy should suit it.",
+    input_schema: { type: "object", properties: { symbol: { type: "string", description: "EXCHANGE:TICKER. Leave out for the active chart's." }, interval: { type: "string", description: "Like 1h, 4h, 1D. Leave out for the active chart's." }, years } },
+  },
+  {
+    name: "script_check",
+    runs: "page",
+    read: true,
+    description:
+      "Compile and run a Pine script (indicator or strategy) on the server on the last 2 years of a symbol (at most 19,500 bars): an error with its line number to fix, or the result. For a strategy: the whole run, the first 70% of the bars and the last 30%, each with return, buy and hold, trades, win rate, typicalHold (how long a typical trade lasted), worst drop and Sharpe; its fees; sizePct (the share of the account a trade uses) and tinyOrder when that's under 1%. Check every script you write before saving it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The whole Pine script." },
+        symbol: { type: "string", description: "EXCHANGE:TICKER. Leave out for the active chart's." },
+        interval: { type: "string", description: "Leave out for the active chart's." },
+        inputs: { type: "object", description: "Input values by key (in1, in2... in the order the script declares them), like {\"in1\": 30}. Leave out for the defaults." },
+        years,
+      },
+      required: ["code"],
+    },
+  },
+  {
+    name: "strategy_sweep",
+    runs: "page",
+    read: true,
+    description:
+      "Try up to 50 versions of a Pine strategy's number inputs on the server. The pick is the best Sharpe on the first 70% of the bars among versions with at least 3 closed trades there; only the pick is scored on the last 30%, then the quant checks run on it (walk-forward, overfitting, deflated Sharpe, cost stress, nearby settings, and on a year or more 3 months at a time). Returns the versions tried, the best ones on the first 70%, the pick with both stretches, the checks passed, and quarters: the pick in each 3 month stretch against buy and hold.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The whole Pine strategy." },
+        sweep: { type: "object", description: "Values to try by input key, up to 3 inputs and 50 versions in all, like {\"in1\": [10, 15, 20], \"in2\": [40, 50, 60]}." },
+        symbol: { type: "string", description: "EXCHANGE:TICKER. Leave out for the active chart's." },
+        interval: { type: "string", description: "Leave out for the active chart's." },
+        inputs: { type: "object", description: "Values for the inputs not swept, by key." },
+        years,
+      },
+      required: ["code", "sweep"],
+    },
+  },
+  {
+    name: "strategy_scan",
+    runs: "page",
+    read: true,
+    description:
+      "Which kinds of strategy suit a symbol: the 8 strategy templates (Moving average cross, MACD cross, Supertrend, Channel breakout, RSI bounce, Bollinger bounce, Pullback in an uptrend, Momentum) on one to three intervals, each with 9 versions of its two main settings picked on the first 70% of the bars, the picks ranked on the last 30% against buy and hold. Returns the versions tried and each kind's pick.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "EXCHANGE:TICKER. Leave out for the active chart's." },
+        intervals: { type: "array", items: { type: "string" }, description: "One to three intervals, like [\"4h\"]. Leave out for 1h, 4h and 1D." },
+        shorts: { type: "boolean", description: "True when the person said they trade short too: the three trend kinds then go short as well; the other five only buy. Leave out for long only." },
+        years,
+      },
+    },
+  },
+  {
+    name: "script_save",
+    runs: "page",
+    description:
+      "Save a checked Pine script to My scripts (a favorite) and, by default, add it to the active chart; a strategy's report opens in the Strategy tester. The active chart must already show symbol and interval (use chart_set first). testing_from sets the report's testing period to start on the first bar the research covered, so the report covers the same bars. The same name and code reuses the saved script.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The whole Pine script, as checked." },
+        name: { type: "string", description: 'A short plain name that tells it apart in My scripts: the symbol, interval and kind, with its settings, like "XRP 1h Channel breakout 24/10". Leave out for the script\'s own title.' },
+        symbol: { type: "string", description: "The symbol it was checked on (EXCHANGE:TICKER)." },
+        interval: { type: "string", description: "The interval it was checked on." },
+        testing_from: when("For a strategy: the first bar the research covered, as its bars line gave it (the time too on an intraday chart)"),
+        add_to_chart: { type: "boolean", description: "Leave out (true) to add it to the active chart." },
+      },
+      required: ["code"],
+    },
   },
   // ---------- lists ----------
   {

@@ -126,6 +126,9 @@ function limiter(max, windowMs) {
 // and importing a signal (the terminal turns it into one). The path is already decoded, as the
 // terminal decodes it before routing.
 const runsCode = (p) => p === "/api/custom" || p.startsWith("/api/custom/") || p === "/api/import/signal";
+// The terminal's strategy research: Pine it runs on the server, in workers with time and memory caps,
+// mostly for the AI. No passkey (one AI answer makes 10 to 20 of these), a cap per account instead.
+const runsResearch = (p) => p.startsWith("/api/pine/") || p === "/api/market/profile";
 
 // ---------- the gateway ----------
 export function createGateway(cfg, { verifyPasskey } = {}) {
@@ -148,6 +151,8 @@ export function createGateway(cfg, { verifyPasskey } = {}) {
   const verifyStepUp = verifyPasskey || ((body) => auth.authenticationVerify(body));
   const stepUpLimit = limiter(60, 10 * 60_000); // two calls a save: room to work on an indicator
   const stepUpMs = cfg.stepUpMs ?? 2 * 60_000;
+  const researchMax = cfg.researchMax ?? 120;
+  const researchLimit = limiter(researchMax, 10 * 60_000);
   const grants = new Map(); // grant -> { idHash, expires }
   setInterval(() => { const t = Date.now(); for (const [k, g] of grants) if (g.expires < t) grants.delete(k); }, 60_000).unref();
 
@@ -323,6 +328,8 @@ export function createGateway(cfg, { verifyPasskey } = {}) {
         if (!g || g.idHash !== session.idHash || g.expires < Date.now())
           return sendJson(res, 428, { error: "Saving code that runs on the server needs your passkey. Reload the page and try again.", stepUp: true });
       }
+      if (runsResearch(decoded) && !researchLimit(session.idHash))
+        return sendJson(res, 429, { error: `That's ${researchMax} strategy tests in 10 minutes, the most allowed. Wait a few minutes.` });
     }
     return proxy(req, res, url);
   }
